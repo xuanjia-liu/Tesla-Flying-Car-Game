@@ -1,47 +1,77 @@
-export type GameState = 'menu' | 'playing' | 'gameover';
+export type GameState = 'loading' | 'menu' | 'playing' | 'gameover';
 
-export const COURSE_FINISH = 900;
-export const TANK_RESERVE_FRACTION = 0.2;
+export const STAGE_LENGTH = 500;
+export const COURSE_LENGTH = STAGE_LENGTH * 3;
+export const ROAD_HALF_WIDTH = 15;
+export const RAIL_X = 30;
+
+export const STAGE_NAMES = ['MOJAVE DAWN', 'COASTAL CAUSEWAY', 'NEON DISTRICT'] as const;
 
 export interface GameStats {
   score: number;
   timeLeft: number;
-  tank: number; // 0..1
-  speed: number;
+  energy: number; // 0..1
+  nitro: number; // 0..1
+  speed: number; // m/s
   combo: number;
+  comboTimer: number; // 0..1 until the combo drops
+  progress: number; // 0..1 along the course
   distance: number;
   airborne: boolean;
-  countdown: number; // >0 = countdown running
+  altitude: number;
+  countdown: number; // >0 while the start countdown runs
+  stage: number;
+  boosting: boolean;
 }
 
 export interface RunBreakdown {
   crashes: number;
   hardLandings: number;
-  flips: number;
+  tricks: number;
   rings: number;
+  ringsTotal: number;
+  nearMisses: number;
   airtime: number;
+  topSpeed: number;
+  checkpoints: number;
 }
+
+export type Grade = 'S' | 'A' | 'B' | 'C' | 'D';
 
 export interface GameOverResult {
   score: number;
   distance: number;
+  finished: boolean;
+  runTime: number;
+  grade: Grade;
   breakdown: RunBreakdown;
 }
+
+export type Tone = 'good' | 'bad' | 'gold';
 
 export interface GameEvents {
   onStats: (stats: GameStats) => void;
   onGameOver: (result: GameOverResult) => void;
-  onToast: (text: string, tone: 'good' | 'bad') => void;
-  onPopup: (label: string, points: number, tone: 'good' | 'bad') => void;
+  onPopup: (label: string, points: number, tone: Tone) => void;
+  onCallout: (text: string, tone: Tone) => void;
+  onStage: (stage: number) => void;
+  onHint: (hint: HintId | null) => void;
 }
 
-export const PALETTE = {
-  bodySilver: 0xe8eaf0,
-  bodyDark: 0x1a1c20,
-  canopy: 0x05070a,
-  tailBar: 0xff1a2e,
-  thruster: 0x3b6fb5,
-  asphalt: 0x14161a,
-  lineYellow: 0xd8b73c,
-  accent: 0x6fc3ff,
-};
+export type HintId = 'drive' | 'fly' | 'nitro' | 'roll' | 'ramp' | 'barrier' | 'gantry';
+
+export const PAINTS = [
+  { id: 'silver', name: 'Quicksilver', hex: 0xd9dce2 },
+  { id: 'red', name: 'Ultra Red', hex: 0xb3121f },
+  { id: 'black', name: 'Obsidian', hex: 0x15171b },
+  { id: 'blue', name: 'Deep Blue', hex: 0x1d3f8f },
+  { id: 'pearl', name: 'Pearl White', hex: 0xf2f2ee },
+] as const;
+
+export function gradeFor(score: number, finished: boolean): Grade {
+  if (finished && score >= 40000) return 'S';
+  if (score >= 25000) return 'A';
+  if (score >= 14000) return 'B';
+  if (score >= 6000) return 'C';
+  return 'D';
+}
