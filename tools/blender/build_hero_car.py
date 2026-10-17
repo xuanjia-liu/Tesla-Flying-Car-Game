@@ -285,7 +285,7 @@ for i, x in enumerate((-0.62, -0.21, 0.21, 0.62)):
 box("WingGap", (1.46, 0.02, 0.32), (0, 0.885, -2.10), "Trim", parent=root)
 box("Wing", (1.52, 0.035, 0.38), (0, 0.925, -2.12), "Paint", bevel=0.012, parent=root, rot_x=0.08)
 
-# ---- wheels: large aero discs. Each wheel hangs off an empty so the game can swivel it flat for hover mode ----
+# ---- wheels: large aero discs. Each wheel hangs off an empty (steer pivot) with a child that spins about the axle ----
 for key, (x, z) in WHEELS.items():
     pivot = bpy.data.objects.new(f"wheel_{key}", None)
     pivot.location = v(x, WHEEL_R - 0.01, z)

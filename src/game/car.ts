@@ -5,15 +5,13 @@ const WHEELS = ['FL', 'FR', 'RL', 'RR'] as const;
 interface Wheel {
   pivot: THREE.Object3D;
   spin: THREE.Object3D;
-  side: number; // -1 left (+X is left in this game's camera), 1 right
   front: boolean;
-  restY: number;
 }
 
 export interface CarVisualState {
   speed: number;
   steer: number;
-  hover: number; // 0 wheels down, 1 wheels flat as hover fans
+  hover: number; // 0 on the ground, 1 airborne (drives the under-wheel thruster glow)
   thrust: number; // 0..1 vertical thrusters
   boost: number; // 0..1 rear thrusters
   brake: boolean;
@@ -118,9 +116,7 @@ export class CarRig {
       this.wheels.push({
         pivot,
         spin,
-        side: pivot.position.x > 0 ? -1 : 1,
         front: key.startsWith('F'),
-        restY: pivot.position.y,
       });
       const fan = new THREE.Mesh(
         new THREE.CircleGeometry(0.62, 32),
@@ -214,16 +210,16 @@ export class CarRig {
   update(dt: number, s: CarVisualState, groundY: number) {
     this.time += dt;
     for (const w of this.wheels) {
-      w.spin.rotation.x += (s.speed / 0.36) * dt * (1 - s.hover * 0.7);
-      w.pivot.rotation.set(0, w.front ? -s.steer * 0.42 * (1 - s.hover) : 0, w.side * s.hover * (Math.PI / 2));
-      w.pivot.position.y = w.restY + s.hover * 0.06;
+      // wheels keep their driving orientation in the air too; only spin (about the axle) and steer change
+      w.spin.rotation.x += (s.speed / 0.36) * dt;
+      w.pivot.rotation.set(0, w.front ? -s.steer * 0.42 : 0, 0);
     }
     for (const f of this.fanGlows) {
       const mat = f.material as THREE.MeshBasicMaterial;
       mat.opacity = s.hover * (0.35 + s.thrust * 0.65) * (0.9 + Math.sin(this.time * 40) * 0.1);
       f.scale.setScalar(0.8 + s.thrust * 0.5);
     }
-    for (const m of this.wheelGlow) m.emissiveIntensity = 2 + s.hover * 3 + s.thrust * 4;
+    for (const m of this.wheelGlow) m.emissiveIntensity = 0.8 + s.thrust * 1.2;
     for (const m of this.thrusterGlow) m.emissiveIntensity = 1.5 + s.boost * 10 + s.thrust * 3;
     for (const m of this.lightRear) m.emissiveIntensity = s.brake ? 12 : 5;
     for (const m of this.lightFront) m.emissiveIntensity = 5 + s.night * 3;
