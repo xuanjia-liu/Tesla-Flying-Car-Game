@@ -2,17 +2,45 @@
 @tailwind components;
 @tailwind utilities;
 
-@keyframes pop {
-  0% {
-    transform: scale(1.6);
-    opacity: 0;
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    -webkit-tap-highlight-color: transparent;
   }
-  60% {
-    transform: scale(0.95);
-    opacity: 1;
+  body {
+    @apply font-sans antialiased text-white;
   }
-  100% {
-    transform: scale(1);
-    opacity: 1;
+}
+
+@layer components {
+  .glass {
+    @apply bg-white/[0.06] border border-white/10 backdrop-blur-md;
   }
+  .btn-primary {
+    @apply relative inline-flex items-center justify-center gap-2 rounded-full px-8 py-3.5 font-display text-sm font-extrabold tracking-[0.22em] text-ink transition active:scale-95;
+    background: linear-gradient(100deg, #7ae8ff, #38d8ff 45%, #b98bff);
+    box-shadow: 0 10px 40px -10px rgba(56, 216, 255, 0.7);
+  }
+  .btn-primary:hover {
+    filter: brightness(1.08);
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-white/15 bg-white/5 px-5 py-2.5 text-xs font-semibold tracking-[0.18em] text-white/80 backdrop-blur transition hover:bg-white/10 hover:text-white active:scale-95;
+  }
+  .icon-btn {
+    @apply pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-black/35 text-white/85 backdrop-blur transition hover:bg-black/55 active:scale-95;
+  }
+  .label {
+    @apply text-[10px] font-semibold uppercase tracking-[0.28em] text-white/50;
+  }
+}
+
+.text-glow {
+  text-shadow: 0 0 24px rgba(56, 216, 255, 0.55);
+}
+
+input[type='range'] {
+  accent-color: #38d8ff;
 }
