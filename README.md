@@ -2,6 +2,8 @@
 
 An arcade flying-car run built with Three.js, React and Vite. Drive, launch off ramps, fly through rings, dodge traffic and beat the clock across three stages: city at day, desert at sunset and a coastal highway at night.
 
+Each stage has a signature stunt inspired by the stunt demos at Tesla's October 2026 next-gen Roadster reveal: a corkscrew ramp rolls the car upside down, launches it over a parked line-up of cars, Cybertrucks and a Semi, and you press roll in the air to kickflip upright before you hit the landing zone.
+
 Play: https://xuanjia-liu.github.io/Tesla-Flying-Car-Game/
 
 ## Controls
@@ -12,7 +14,7 @@ Play: https://xuanjia-liu.github.io/Tesla-Flying-Car-Game/
 | Accelerate / brake | W / S | RT / LT | Auto-throttle, Brake button |
 | Fly (thrust up) | Space | A | Thrust button |
 | Nitro | Shift / K | X / RB | Nitro button |
-| Barrel roll (in air) | Q / E | B / Y + stick | Roll button |
+| Barrel roll / stunt kickflip (in air) | Q / E | B / Y + stick | Roll button |
 | Pause | Esc / P | Start | Pause button |
 
 ## Development

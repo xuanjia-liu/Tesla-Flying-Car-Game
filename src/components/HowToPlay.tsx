@@ -33,6 +33,7 @@ const TIPS = [
   'Thrust drains your energy; it refills while you drive and when you fly through rings.',
   'Rings, near misses, roof hops and barrel rolls build a combo multiplier and fill nitro.',
   'Finish a roll before you touch down, or it is a wipeout.',
+  'Each stage has a stunt ramp that rolls you upside down and launches you over parked cars. Roll in the air to kickflip upright for a bonus.',
   'Checkpoint gates add 12 seconds. Crashes cost 3.',
 ];
 
