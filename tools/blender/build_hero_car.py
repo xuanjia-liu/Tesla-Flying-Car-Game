@@ -1,7 +1,8 @@
 """Builds the hero car, styled after the next-gen Tesla Roadster revealed in October 2026
 (angular Esprit / SR-71 wedge, wraparound glass canopy with a removable roof panel, slim
-front light bar with pop-down lamps, full-width tail bar, four-nozzle diffuser, flush
-active rear wing), and exports it as GLB.
+front light bar with pop-down lamps, full-width tail bar) with the SpaceX-package cold-gas
+thruster system: ten nozzles, a drop-down plate over the rear mains, diffuser vacuum fans
+and an active rear wing. Exports GLB.
 
 Run headless:
   blender -b -P tools/blender/build_hero_car.py -- public/models/roadster.glb [--preview]
@@ -11,15 +12,17 @@ Modelling space used below: X right, Y up, Z forward (three.js convention).
 produces a +Z-forward, +Y-up model.
 
 Object names are part of the contract with src/game/car.ts: wheel_XX / spin_XX empties,
-Nozzle_* meshes, and the material names Paint / Glass / LightFront / LightRear /
-ThrusterGlow / WheelGlow.
+Nozzle_<group>_<i> cold-gas nozzle meshes (groups rear / front / down / side; the game emits
+from the face of each bounding box that points along the group's firing direction),
+fan_<i> vacuum-fan empties, plate_hinge and wing_pivot, and the material names Paint /
+Glass / LightFront / LightRear / WheelGlow / Plate.
 """
 import math
 import sys
 
 import bmesh
 import bpy
-from mathutils import Matrix
+from mathutils import Matrix, Vector
 
 OUT = sys.argv[sys.argv.index("--") + 1] if "--" in sys.argv else "roadster.glb"
 
@@ -58,6 +61,8 @@ MAT = {
     "LightRear": material("LightRear", (1, 0.05, 0.08), emission=(1.0, 0.04, 0.08), strength=6),
     "ThrusterGlow": material("ThrusterGlow", (0.6, 0.85, 1.0), emission=(0.45, 0.8, 1.0), strength=2),
     "WheelGlow": material("WheelGlow", (0.1, 0.7, 1.0), emission=(0.15, 0.75, 1.0), strength=3),
+    "Nozzle": material("Nozzle", (0.78, 0.58, 0.34), 1.0, 0.32),
+    "Plate": material("Plate", (0.92, 0.92, 0.9), 0.0, 0.45),
 }
 
 
@@ -171,6 +176,51 @@ def cylinder_z(name, r0, r1, length, center, mat, segs=24, parent=None):
     return new_obj(name, bm, mat, parent, sharp_angle=50)
 
 
+def plane_uv(name, w, h, center, mat, parent=None):
+    """Rear-facing (-Z) quad with a 0..1 UV layout, for textured decals such as the plate."""
+    bm = bmesh.new()
+    uv = bm.loops.layers.uv.new()
+    cx, cy, cz = center
+    pts = [(cx + w / 2, cy - h / 2), (cx - w / 2, cy - h / 2), (cx - w / 2, cy + h / 2), (cx + w / 2, cy + h / 2)]
+    verts = [bm.verts.new(v(x, y, cz)) for x, y in pts]
+    f = bm.faces.new(verts)
+    for loop, (u, t) in zip(f.loops, ((0, 0), (1, 0), (1, 1), (0, 1))):
+        loop[uv].uv = (u, t)
+    bm.normal_update()
+    if f.normal.y < 0:
+        f.normal_flip()
+    return new_obj(name, bm, mat, parent, smooth=False)
+
+
+def nozzle(name, pos, direction, parent=None, length=0.12):
+    """Bell nozzle whose exit sits at `pos` and fires along `direction` (model space)."""
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=16, radius1=0.032, radius2=0.058, depth=length)
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=16, radius1=0.042, radius2=0.042, depth=0.004,
+                          matrix=Matrix.Translation((0, 0, length / 2 + 0.001)))
+    rot = Vector((0, 0, 1)).rotation_difference(Vector(v(*direction))).to_matrix().to_4x4()
+    d = Vector(v(*direction))
+    exit_ = Vector(v(*pos))
+    bmesh.ops.transform(bm, verts=bm.verts, matrix=Matrix.Translation(exit_ - d * (length / 2)) @ rot)
+    ob = new_obj(name, bm, "Nozzle", parent, sharp_angle=50)
+    return ob
+
+
+def fan_blades(name, radius, count, parent):
+    """Hub plus pitched blades in the model XY plane, centred on the parent empty (spins about model Z)."""
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=12, radius1=0.022, radius2=0.022, depth=0.03,
+                          matrix=Matrix.Rotation(math.pi / 2, 4, "X"))
+    for k in range(count):
+        ret = bmesh.ops.create_cube(bm, size=1.0)
+        vs = ret["verts"]
+        a = k / count * math.tau
+        m = (Matrix.Rotation(a, 4, "Y") @ Matrix.Translation((0, 0, radius * 0.55))
+             @ Matrix.Rotation(0.5, 4, "Z") @ Matrix.Diagonal((0.006, 0.026, radius * 0.9, 1)))
+        bmesh.ops.transform(bm, verts=vs, matrix=m)
+    return new_obj(name, bm, "Rim", parent, smooth=False)
+
+
 def apply_modifiers(ob):
     bpy.context.view_layer.objects.active = ob
     for mod in list(ob.modifiers):
@@ -269,21 +319,58 @@ box("Underbody", (1.66, 0.08, 4.40), (0, 0.22, 0.0), "Trim", bevel=0.03, parent=
 for side in (-1, 1):
     box(f"Sill{side}", (0.06, 0.07, 1.90), (side * 0.86, 0.255, 0.02), "Trim", bevel=0.015, parent=root)
 
-# ---- rear: full-width tail bar, centre high-mounted stop lamp, diffuser with four nozzles ----
+# ---- rear: full-width tail bar, centre high-mounted stop lamp, drop-down plate over the main thrusters ----
 box("LightRear", (1.86, 0.045, 0.04), (0, 0.775, -2.375), "LightRear", bevel=0.012, parent=root)
 box("Chmsl", (0.56, 0.02, 0.03), (0, 0.885, -2.335), "LightRear", bevel=0.006, parent=root)
 box("TailPanel", (1.62, 0.24, 0.05), (0, 0.55, -2.37), "Trim", bevel=0.015, parent=root)
-box("Diffuser", (1.62, 0.20, 0.36), (0, 0.33, -2.24), "Trim", bevel=0.03, parent=root)
-for i in range(7):
-    box(f"Fin{i}", (0.025, 0.12, 0.30), (-0.66 + i * 0.22, 0.32, -2.30), "Trim", parent=root)
-for i, x in enumerate((-0.62, -0.21, 0.21, 0.62)):
-    tag = ("L", "L2", "R2", "R")[i]
-    cylinder_z(f"Nozzle_{tag}", 0.11, 0.13, 0.22, (x, 0.50, -2.40), "Trim", segs=24, parent=root)
-    cylinder_z(f"ThrusterGlow_{tag}", 0.09, 0.09, 0.02, (x, 0.50, -2.515), "ThrusterGlow", segs=24, parent=root)
+box("PlateRecess", (0.62, 0.16, 0.02), (0, 0.565, -2.40), "Trim", parent=root)
+plate_hinge = bpy.data.objects.new("plate_hinge", None)
+plate_hinge.location = v(0, 0.485, -2.43)
+plate_hinge.parent = root
+scene.collection.objects.link(plate_hinge)
+box("PlateBack", (0.60, 0.15, 0.012), (0, 0.075, 0.0), "Trim", parent=plate_hinge)
+plane_uv("PlateFace", 0.56, 0.12, (0, 0.075, -0.0075), "Plate", parent=plate_hinge)
 
-# flush active rear wing (shown slightly raised), with a dark gap under it
-box("WingGap", (1.46, 0.02, 0.32), (0, 0.885, -2.10), "Trim", parent=root)
-box("Wing", (1.52, 0.035, 0.38), (0, 0.925, -2.12), "Paint", bevel=0.012, parent=root, rot_x=0.08)
+# diffuser with four ground-effect vacuum fans
+box("Diffuser", (1.62, 0.20, 0.36), (0, 0.33, -2.24), "Trim", bevel=0.03, parent=root)
+for i, x in enumerate((-0.80, -0.40, 0.0, 0.40, 0.80)):
+    box(f"Fin{i}", (0.025, 0.17, 0.30), (x, 0.33, -2.30), "Trim", parent=root)
+for i, x in enumerate((-0.60, -0.20, 0.20, 0.60)):
+    cylinder_z(f"FanShroud{i}", 0.098, 0.098, 0.05, (x, 0.33, -2.405), "Rim", segs=24, parent=root)
+    cylinder_z(f"FanBack{i}", 0.09, 0.09, 0.02, (x, 0.33, -2.39), "Trim", segs=24, parent=root)
+    fan = bpy.data.objects.new(f"fan_{i}", None)
+    fan.location = v(x, 0.33, -2.425)
+    fan.parent = root
+    scene.collection.objects.link(fan)
+    fan_blades(f"FanBlades{i}", 0.085, 6, fan)
+
+# ---- cold-gas thrusters (10): 2 rear mains behind the plate, 2 forward in the intake,
+#      4 downward at the corners, 2 vectoring pods on the sides (outward for attitude, upward for downforce) ----
+THRUSTERS = {
+    "rear": [((-0.13, 0.565, -2.41), (0, 0, -1)), ((0.13, 0.565, -2.41), (0, 0, -1))],
+    "front": [((-0.32, 0.33, 2.45), (0, 0, 1)), ((0.32, 0.33, 2.45), (0, 0, 1))],
+    "down": [((-0.74, 0.20, 2.02), (0, -1, 0)), ((0.74, 0.20, 2.02), (0, -1, 0)),
+             ((-0.80, 0.20, -2.16), (0, -1, 0)), ((0.80, 0.20, -2.16), (0, -1, 0))],
+    "side": [((-0.93, 0.36, -0.30), (-1, 0, 0)), ((0.93, 0.36, -0.30), (1, 0, 0))],
+}
+for group, items in THRUSTERS.items():
+    for i, (pos, d) in enumerate(items):
+        nozzle(f"Nozzle_{group}_{i}", pos, d, parent=root)
+for side in (-1, 1):
+    box(f"DownPodF{side}", (0.16, 0.06, 0.16), (side * 0.74, 0.235, 2.02), "Trim", bevel=0.01, parent=root)
+    box(f"DownPodR{side}", (0.16, 0.06, 0.16), (side * 0.80, 0.235, -2.16), "Trim", bevel=0.01, parent=root)
+    box(f"SidePod{side}", (0.06, 0.12, 0.22), (side * 0.885, 0.36, -0.30), "Trim", bevel=0.012, parent=root)
+
+# active variable-angle rear wing on swan-neck struts; wing_pivot carries the angle of attack
+for side in (-1, 1):
+    box(f"WingStrut{side}", (0.035, 0.24, 0.09), (side * 0.42, 0.98, -2.16), "Trim", bevel=0.008, parent=root, rot_x=-0.25)
+wing_pivot = bpy.data.objects.new("wing_pivot", None)
+wing_pivot.location = v(0, 1.10, -2.16)
+wing_pivot.parent = root
+scene.collection.objects.link(wing_pivot)
+box("Wing", (1.72, 0.035, 0.42), (0, 0.0, -0.04), "Paint", bevel=0.012, parent=wing_pivot)
+for side in (-1, 1):
+    box(f"WingEndplate{side}", (0.02, 0.16, 0.46), (side * 0.87, -0.03, -0.05), "Trim", bevel=0.006, parent=wing_pivot)
 
 # ---- wheels: large aero discs. Each wheel hangs off an empty (steer pivot) with a child that spins about the axle ----
 for key, (x, z) in WHEELS.items():
