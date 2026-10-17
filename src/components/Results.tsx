@@ -26,7 +26,7 @@ export default function Results({ result, best, newBest, onRetry, onMenu }: Prop
     ['Near misses', String(b.nearMisses)],
     ['Top speed', `${b.topSpeed} mph`],
     ['Airtime', `${b.airtime}s`],
-    ['Crashes', String(b.crashes + b.hardLandings)],
+    ['Wipeouts', String(b.crashes + b.hardLandings)],
   ];
   return (
     <div className="glass w-full max-w-lg animate-fadeup rounded-3xl p-6 text-center shadow-2xl sm:p-8">

@@ -185,6 +185,7 @@ export class Game {
         rings: () => this.world.rings.filter((r) => !r.passed).slice(0, 3).map((r) => r.pos.toArray()),
         obstacles: () => this.world.obstacles.map((o) => [o.box.min.toArray(), o.box.max.toArray()]),
         traffic: () => this.world.traffic.filter((t) => t.active && !t.knocked).map((t) => [...t.pos.toArray(), t.half.x, t.half.y, t.half.z, t.speed]),
+        scene: this.scene,
       };
     }
     this.loop();

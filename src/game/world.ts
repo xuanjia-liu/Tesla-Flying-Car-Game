@@ -458,15 +458,16 @@ export class World {
         z += Math.max(w, 20) + 10 + rnd() * 20;
       }
     }
-    let windowMask: THREE.Texture | null = null;
+    const windowMasks = new Map<THREE.Texture | null, THREE.Texture | null>();
     for (const [name, list] of groups) {
       const asset = this.props.get(name)!;
       const mat = (asset.material as THREE.MeshStandardMaterial).clone();
-      windowMask ??= windowEmissiveMap(mat.map);
-      mat.emissiveMap = windowMask;
+      if (!windowMasks.has(mat.map)) windowMasks.set(mat.map, windowEmissiveMap(mat.map));
+      mat.emissiveMap = windowMasks.get(mat.map) ?? null;
       mat.emissive = new THREE.Color(0xffd29a);
       mat.color.setHex(0x9aa0b8);
-      this.trackNight(mat, 0, 2.2);
+      mat.envMapIntensity = 0.35;
+      this.trackNight(mat, 0, 1.4);
       this.instanced(asset.geometry, mat, list, 'cast');
     }
 
@@ -988,7 +989,7 @@ function windowEmissiveMap(map: THREE.Texture | null): THREE.Texture | null {
   for (let i = 0; i < d.length; i += 4) {
     const r = d[i];
     const b = d[i + 2];
-    const glass = b > r + 25 && b > 90;
+    const glass = b > r + 45 && b > 120;
     const v = glass ? 255 : 0;
     d[i] = d[i + 1] = d[i + 2] = v;
   }
