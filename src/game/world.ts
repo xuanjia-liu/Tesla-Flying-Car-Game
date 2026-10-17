@@ -4,6 +4,7 @@ import type { PropAsset } from './assets';
 import type { StageLook } from './environment';
 import { bannerTexture, checkerTexture, groundTexture, hazardTexture, roadTextures } from './textures';
 import { COURSE_LENGTH, RAIL_X, STAGE_LENGTH } from './types';
+import { buildRamp, cybertruckGeometry, landingTexture, makeStunt, semiGeometry, type Stunt } from './stunts';
 
 export const LANES = [-11.25, -3.75, 3.75, 11.25];
 const RING_RADIUS = 3.2;
@@ -33,7 +34,7 @@ export interface BoostPad {
 
 export interface Obstacle {
   box: THREE.Box3;
-  kind: 'barrier' | 'gantry';
+  kind: 'barrier' | 'gantry' | 'parked';
 }
 
 export interface Checkpoint {
@@ -104,42 +105,45 @@ type Spec = { z0: number; count: number; spacing: number; x: number; xAmp?: numb
 const STAGE_CONTENT = {
   ramps: [
     { x: 0, z: 150 },
-    { x: -7.5, z: 360 },
     { x: 7.5, z: 690 },
-    { x: -7.5, z: 820 },
     { x: 0, z: 1120 },
-    { x: -7.5, z: 1320 },
+  ],
+  stunts: [
+    { z: 305, dir: 1 as const },
+    { z: 780, dir: -1 as const },
+    { z: 1190, dir: 1 as const },
   ],
   pads: [
     { x: 0, z: 90 },
-    { x: -11.25, z: 300 },
+    { x: 0, z: 288 },
     { x: 7.5, z: 440 },
     { x: 0, z: 540 },
-    { x: -11.25, z: 740 },
+    { x: 0, z: 762 },
     { x: 11.25, z: 870 },
     { x: 0, z: 1040 },
-    { x: -11.25, z: 1240 },
+    { x: 0, z: 1172 },
     { x: 11.25, z: 1420 },
   ],
   barriers: [
     { z: 590, x: -7.5, w: 15 },
     { z: 640, x: 7.5, w: 15 },
-    { z: 765, x: 0, w: 22 },
-    { z: 930, x: 0, w: 30 },
+    { z: 990, x: 0, w: 30 },
   ],
-  gantries: [1080, 1180, 1280, 1380, 1460],
+  gantries: [1080, 1150, 1380, 1460],
   chains: [
     { z0: 185, count: 5, spacing: 15, x: 0, y0: 5.5, arc: 2.5 },
     { z0: 265, count: 5, spacing: 14, x: 10, xAmp: 2, y0: 6, arc: 5 },
-    { z0: 395, count: 5, spacing: 15, x: -7.5, y0: 5.5, arc: 2.5 },
+    { z0: 366, count: 3, spacing: 9, x: 0, y0: 11.2, arc: 0.6 },
+    { z0: 460, count: 4, spacing: 14, x: -7.5, y0: 5.5, arc: 2.5 },
     { z0: 600, count: 5, spacing: 13, x: 0, y0: 8, arc: 4 },
     { z0: 725, count: 5, spacing: 15, x: 7.5, y0: 5.5, arc: 2.5 },
     { z0: 752, count: 3, spacing: 11, x: -1, y0: 5, arc: 1 },
-    { z0: 855, count: 5, spacing: 15, x: -7.5, y0: 5.5, arc: 2.5 },
-    { z0: 922, count: 3, spacing: 9, x: 0, y0: 4.5, arc: 1.5 },
+    { z0: 841, count: 3, spacing: 9, x: 0, y0: 11.2, arc: 0.6 },
+    { z0: 958, count: 3, spacing: 9, x: 0, y0: 4.5, arc: 1.5 },
     { z0: 1050, count: 4, spacing: 12, x: 3.75, y0: 2.6, arc: 0 },
-    { z0: 1150, count: 5, spacing: 14, x: 0, y0: 7, arc: 5 },
-    { z0: 1225, count: 5, spacing: 12, x: 11.25, xAmp: 3, y0: 3, arc: 3 },
+    { z0: 1100, count: 4, spacing: 12, x: -7.5, y0: 5, arc: 2 },
+    { z0: 1251, count: 3, spacing: 9, x: 0, y0: 11.2, arc: 0.6 },
+    { z0: 1296, count: 4, spacing: 12, x: 0, y0: 3.5, arc: 1.5 },
     { z0: 1352, count: 5, spacing: 14, x: -7.5, y0: 7, arc: 4.5 },
     { z0: 1430, count: 5, spacing: 13, x: 0, xAmp: 4, y0: 3, arc: 2.5 },
   ] as Spec[],
@@ -151,6 +155,7 @@ export class World {
   ramps: Ramp[] = [];
   pads: BoostPad[] = [];
   obstacles: Obstacle[] = [];
+  stunts: Stunt[] = [];
   checkpoints: Checkpoint[] = [];
   traffic: TrafficCar[] = [];
 
@@ -177,6 +182,7 @@ export class World {
     this.buildCity();
     this.buildRails();
     this.buildRamps();
+    this.buildStunts();
     this.buildPads();
     this.buildBarriers();
     this.buildGantries();
@@ -590,6 +596,122 @@ export class World {
     }
   }
 
+  private buildStunts() {
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x3a3f48, metalness: 0.7, roughness: 0.4 });
+    const wallMat = new THREE.MeshStandardMaterial({ map: hazardTexture(), roughness: 0.6 });
+    (wallMat.map as THREE.Texture).repeat.set(12, 1);
+    const wallGlow = new THREE.MeshStandardMaterial({ color: 0x300018, emissive: 0xff3fb0, emissiveIntensity: 2 });
+    this.trackNight(wallGlow, 1.4, 4);
+    const landMat = new THREE.MeshBasicMaterial({ map: landingTexture(), transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+    const parkedMat = new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.55, roughness: 0.35 });
+    const custom = { semi: semiGeometry(), cyber: cybertruckGeometry() };
+    const customSize = (g: THREE.BufferGeometry) => {
+      g.computeBoundingBox();
+      return g.boundingBox!.getSize(new THREE.Vector3());
+    };
+
+    type Slot = { model: string; x: number };
+    const rows: Slot[][] = [
+      [{ model: 'car_sedan', x: -12 }, { model: 'cyber', x: -6 }, { model: 'car_suv', x: 0 }, { model: 'cyber', x: 6 }, { model: 'car_van', x: 12 }],
+      [{ model: 'car_taxi', x: -12.6 }, { model: 'semi', x: 0 }, { model: 'car_hatchback-sports', x: 12.6 }],
+      [{ model: 'car_truck', x: -12 }, { model: 'cyber', x: -6 }, { model: 'car_delivery', x: 0 }, { model: 'car_sedan-sports', x: 6 }, { model: 'cyber', x: 12 }],
+    ];
+    const transforms = new Map<string, THREE.Matrix4[]>();
+
+    for (const spec of STAGE_CONTENT.stunts) {
+      const s = makeStunt(spec.z, spec.dir);
+      this.stunts.push(s);
+      const ramp = buildRamp(s, frameMat);
+      this.trackNight(ramp.glowMat, 1.5, 4);
+      ramp.deckMat.emissive = new THREE.Color(0xffffff);
+      ramp.deckMat.emissiveMap = ramp.deckMat.map;
+      // the inverted half of the deck faces away from the sun; a little self-light keeps its markings readable
+      this.trackNight(ramp.deckMat, 0.3, 0.45);
+      this.add(ramp.group);
+
+      // funnel walls that steer grounded cars onto the ramp
+      for (const side of [-1, 1]) {
+        const x0 = side * (RAIL_X - 1.1);
+        const x1 = s.x + side * (s.hw + 0.4);
+        const len = Math.hypot(x1 - x0, s.z0 - s.funnelZ0);
+        const yaw = Math.atan2(x1 - x0, s.z0 - s.funnelZ0);
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.4, len), wallMat);
+        wall.position.set((x0 + x1) / 2, 0.7, (s.funnelZ0 + s.z0) / 2);
+        wall.rotation.y = yaw;
+        this.add(wall, 'both');
+        const top = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.1, len), wallGlow);
+        top.position.set(wall.position.x, 1.45, wall.position.z);
+        top.rotation.y = yaw;
+        this.add(top);
+      }
+
+      // parked line-up across the road; shoulder walls close the gaps
+      rows.forEach((row, ri) => {
+        const z = s.lineupZ0 + 2 + ri * 5;
+        for (const slot of row) {
+          let len: number;
+          let width: number;
+          let height: number;
+          let scale = 1;
+          if (slot.model === 'semi' || slot.model === 'cyber') {
+            const size = customSize(custom[slot.model]);
+            len = size.z;
+            width = size.x;
+            height = size.y;
+          } else {
+            const asset = this.props.get(slot.model);
+            if (!asset) continue;
+            const target = slot.model.includes('truck') || slot.model.includes('delivery') ? 6.2 : 4.8;
+            scale = target / Math.max(asset.size.x, asset.size.z);
+            len = Math.max(asset.size.x, asset.size.z) * scale;
+            width = Math.min(asset.size.x, asset.size.z) * scale;
+            height = asset.size.y * scale;
+          }
+          const list = transforms.get(slot.model) ?? [];
+          list.push(this.tf(s.x + slot.x, 0, z, scale, scale, scale, Math.PI / 2 * (ri % 2 ? -1 : 1)));
+          transforms.set(slot.model, list);
+          this.obstacles.push({
+            kind: 'parked',
+            box: new THREE.Box3(
+              new THREE.Vector3(s.x + slot.x - len / 2, 0, z - width / 2),
+              new THREE.Vector3(s.x + slot.x + len / 2, height, z + width / 2)
+            ),
+          });
+        }
+      });
+      for (const side of [-1, 1]) {
+        const w = RAIL_X - 15.4;
+        const cx = side * (15.4 + w / 2);
+        const depth = s.lineupZ1 - s.lineupZ0;
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(w, 2.4, depth), wallMat);
+        wall.position.set(cx, 1.2, (s.lineupZ0 + s.lineupZ1) / 2);
+        this.add(wall, 'both');
+        this.obstacles.push({
+          kind: 'barrier',
+          box: new THREE.Box3(new THREE.Vector3(cx - w / 2, 0, s.lineupZ0), new THREE.Vector3(cx + w / 2, 2.4, s.lineupZ1)),
+        });
+      }
+
+      const pad = new THREE.Mesh(new THREE.PlaneGeometry(22, s.landZ1 - s.landZ0), landMat);
+      pad.rotation.x = -Math.PI / 2;
+      pad.position.set(s.x, 0.035, (s.landZ0 + s.landZ1) / 2);
+      this.add(pad);
+    }
+
+    for (const [model, list] of transforms) {
+      if (model === 'semi' || model === 'cyber') this.instanced(custom[model], parkedMat, list, 'cast');
+      else {
+        const asset = this.props.get(model)!;
+        this.instanced(asset.geometry, asset.material, list, 'cast');
+      }
+    }
+  }
+
+  stuntAt(z: number) {
+    for (const s of this.stunts) if (z >= s.funnelZ0 - 150 && z <= s.landZ1) return s;
+    return null;
+  }
+
   private buildPads() {
     this.padMat = new THREE.ShaderMaterial({
       uniforms: {
@@ -801,6 +923,7 @@ export class World {
   }
 
   private laneBlocked(x: number, z: number) {
+    if (this.stuntAt(z)) return true;
     for (const r of this.ramps) if (Math.abs(r.x - x) < r.halfW + 2 && r.z0 > z - 40 && r.z0 < z + 260) return true;
     for (const o of this.obstacles) {
       if (o.kind !== 'barrier') continue;
@@ -846,6 +969,7 @@ export class World {
       const mesh = this.trafficMeshes[car.model];
       const scale = this.trafficModels[car.model].scale;
       if (car.active && (car.pos.z < playerZ - 80 || car.pos.z > COURSE_LENGTH + 120)) car.active = false;
+      if (car.active && !car.knocked && this.stunts.some((st) => car.pos.z > st.funnelZ0 - 4 && car.pos.z < st.landZ1)) car.active = false;
       if (car.active && car.knocked) {
         car.knockTime += dt;
         car.knockVel.y -= 22 * dt;

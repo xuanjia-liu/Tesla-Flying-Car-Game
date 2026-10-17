@@ -31,6 +31,8 @@ export interface RunBreakdown {
   rings: number;
   ringsTotal: number;
   nearMisses: number;
+  stunts: number;
+  stuntsTotal: number;
   airtime: number;
   topSpeed: number;
   checkpoints: number;
@@ -58,7 +60,7 @@ export interface GameEvents {
   onHint: (hint: HintId | null) => void;
 }
 
-export type HintId = 'drive' | 'fly' | 'nitro' | 'roll' | 'ramp' | 'barrier' | 'gantry';
+export type HintId = 'drive' | 'fly' | 'nitro' | 'roll' | 'ramp' | 'barrier' | 'gantry' | 'stunt' | 'kickflip';
 
 export const PAINTS = [
   { id: 'silver', name: 'Quicksilver', hex: 0xd9dce2 },

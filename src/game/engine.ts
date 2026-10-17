@@ -7,6 +7,7 @@ import { ParticlePool } from './particles';
 import { PostFX } from './postfx';
 import type { Settings } from './settings';
 import { sfx, startLoops, stopLoops, updateLoops, startMusic, setMusicIntensity, setVolumes } from './audio';
+import { stuntPose, type Stunt, type StuntPose } from './stunts';
 import { World, type TrafficCar } from './world';
 import {
   COURSE_LENGTH,
@@ -38,6 +39,10 @@ const COMBO_WINDOW = 4.5;
 const ROLL_TIME = 0.62;
 const CAR_HALF = new THREE.Vector3(0.95, 0.6, 2.3);
 const COUNTDOWN = 3.4;
+const RAIL_SPEED = 46;
+const RAIL_BOOST_SPEED = 62;
+const KICKFLIP_TIME = 0.8;
+const wrapAngle = (a: number) => THREE.MathUtils.euclideanModulo(a + Math.PI, Math.PI * 2) - Math.PI;
 
 type Mode = 'showroom' | 'countdown' | 'race' | 'over';
 
@@ -91,6 +96,23 @@ export class Game {
   private invuln = 0;
   private throttle = 0;
   private brake = false;
+
+  // stunt ramp: riding the corkscrew, then the launch over the line-up
+  private rail: Stunt | null = null;
+  private railSpeed = 0;
+  private railBlend = 0;
+  private stuntAir: Stunt | null = null;
+  private stuntRoll = 0;
+  private flipFrom = 0;
+  private flipTo = 0;
+  private flipT = -1;
+  private flipDur = 0;
+  private kickflip = false;
+  private stuntHit = false;
+  private pose: StuntPose = { pos: new THREE.Vector3(), roll: 0, slope: 0 };
+  private stuntCam = 0;
+  private railCam = 0;
+  private camRoll = 0;
 
   // run state
   private timeLeft = START_TIME;
@@ -181,10 +203,14 @@ export class Game {
           timeLeft: this.timeLeft,
           bd: this.bd,
           rolling: this.rolling,
+          rail: !!this.rail,
+          stuntAir: !!this.stuntAir,
+          stuntRoll: this.stuntRoll,
         }),
         rings: () => this.world.rings.filter((r) => !r.passed).slice(0, 3).map((r) => r.pos.toArray()),
         obstacles: () => this.world.obstacles.map((o) => [o.box.min.toArray(), o.box.max.toArray()]),
         traffic: () => this.world.traffic.filter((t) => t.active && !t.knocked).map((t) => [...t.pos.toArray(), t.half.x, t.half.y, t.half.z, t.speed]),
+        stunts: () => this.world.stunts.map((s) => [s.funnelZ0, s.z0, s.z1, s.x, s.landZ0, s.landZ1]),
         scene: this.scene,
       };
     }
@@ -192,7 +218,7 @@ export class Game {
   }
 
   private freshBreakdown(): RunBreakdown {
-    return { crashes: 0, hardLandings: 0, tricks: 0, rings: 0, ringsTotal: 0, nearMisses: 0, airtime: 0, topSpeed: 0, checkpoints: 0 };
+    return { crashes: 0, hardLandings: 0, tricks: 0, rings: 0, ringsTotal: 0, nearMisses: 0, stunts: 0, stuntsTotal: 0, airtime: 0, topSpeed: 0, checkpoints: 0 };
   }
 
   applySettings(s: Settings) {
@@ -247,6 +273,14 @@ export class Game {
     this.stage = 0;
     this.bd = this.freshBreakdown();
     this.bd.ringsTotal = this.world.rings.length;
+    this.bd.stuntsTotal = this.world.stunts.length;
+    this.rail = null;
+    this.stuntAir = null;
+    this.stuntRoll = 0;
+    this.flipT = -1;
+    this.kickflip = false;
+    this.stuntHit = false;
+    this.stuntCam = 0;
     this.world.reset();
     this.exhaust.reset();
     this.smoke.reset();
@@ -480,7 +514,12 @@ export class Game {
     }
     this.invuln = Math.max(0, this.invuln - dt);
 
-    this.drive(dt, inp);
+    if (!this.rail) this.tryEnterRail();
+    if (this.rail) this.rideRail(dt, inp);
+    else {
+      this.updateStuntFlip(dt, inp);
+      this.drive(dt, inp);
+    }
     this.collide(dt);
     this.updateCarPose(dt, inp, true);
     this.emitFx(dt);
@@ -499,9 +538,144 @@ export class Game {
     if (this.pos.z > 60) this.hint('fly');
     if (this.pos.z > 115 && this.pos.z < 150) this.hint('ramp');
     if (this.pos.z > 240) this.hint('nitro');
-    if (this.pos.z > 330 && !this.onGround) this.hint('roll');
+    if (this.pos.z > 330 && !this.onGround && !this.stuntAir) this.hint('roll');
     if (this.pos.z > 545) this.hint('barrier');
     if (this.pos.z > 1030) this.hint('gantry');
+    const near = this.world.stuntAt(this.pos.z);
+    if (near && this.pos.z > near.funnelZ0 - 70 && this.pos.z < near.funnelZ0) this.hint('stunt');
+  }
+
+  // ---------------- stunt ramp ----------------
+
+  private tryEnterRail() {
+    for (const s of this.world.stunts) {
+      if (this.stuntAir === s || this.pos.z < s.z0 || this.pos.z > s.z1 - 2) continue;
+      const entry = this.pos.z < s.z0 + 4 && Math.abs(this.pos.x - s.x) < s.hw && this.pos.y < 1.5;
+      // anything that drifts into the tube mid-ramp gets pulled onto the deck rather than clipping through it
+      const inside = Math.abs(this.pos.x - s.x) < s.radius + 1.5 && this.pos.y < s.radius * 2 + s.climb + 1.5;
+      if (!entry && !inside) continue;
+      this.rail = s;
+      this.railSpeed = THREE.MathUtils.clamp(this.vel.z, RAIL_SPEED - 2, RAIL_BOOST_SPEED);
+      this.railBlend = entry ? 0.6 : 0;
+      this.heading = 0;
+      this.rolling = false;
+      this.roll = 0;
+      this.onGround = true;
+      this.stuntHit = false;
+      this.kickflip = false;
+      this.flipT = -1;
+      this.events.onCallout('STUNT RAMP', 'gold');
+      sfx.boost();
+      this.shake = Math.max(this.shake, 0.25);
+      return;
+    }
+  }
+
+  private rideRail(dt: number, inp: InputState) {
+    const s = this.rail!;
+    this.throttle = Math.max(0, inp.throttle);
+    this.brake = false;
+    this.steer += (0 - this.steer) * Math.min(1, dt * 8);
+    this.padBoost = Math.max(0, this.padBoost - dt);
+    const wantsNitro = inp.boost && this.nitro > 0;
+    this.boosting = this.padBoost > 0 || wantsNitro;
+    if (wantsNitro && this.padBoost <= 0) this.nitro = Math.max(0, this.nitro - NITRO_DRAIN * dt);
+    this.thrusting = false;
+    const target = this.boosting ? RAIL_BOOST_SPEED : RAIL_SPEED;
+    this.railSpeed += (target - this.railSpeed) * Math.min(1, dt * 1.5);
+    this.railBlend = Math.min(1, this.railBlend + dt * 5);
+    this.energy = Math.min(100, this.energy + ENERGY_REFILL * 2 * dt);
+
+    const z = Math.min(this.pos.z + this.railSpeed * dt, s.z1);
+    stuntPose(s, z, this.pose);
+    this.tmp.copy(this.pos);
+    this.pos.lerp(this.pose.pos, this.railBlend);
+    this.pos.z = z;
+    this.vel.subVectors(this.pos, this.tmp).divideScalar(dt);
+    this.stuntRoll = this.pose.roll;
+    this.heading = 0;
+    this.onGround = true;
+
+    if (z >= s.z1) {
+      this.rail = null;
+      this.stuntAir = s;
+      this.onGround = false;
+      this.airTime = 0;
+      this.tricks = 0;
+      this.vel.set(0, this.pose.slope * this.railSpeed + 2, this.railSpeed);
+      this.energy = 100;
+      this.nitro = Math.min(100, this.nitro + 15);
+      this.shake = Math.max(this.shake, 0.35);
+      this.flash = Math.max(this.flash, 0.3);
+      sfx.hop();
+      this.events.onCallout('LAUNCH!', 'gold');
+      this.hintsShown.delete('kickflip');
+      this.hint('kickflip');
+    }
+  }
+
+  /** In the air after a stunt launch: ROLL fires a 1.5-turn kickflip upright, otherwise the car self-rights slowly. */
+  private updateStuntFlip(dt: number, inp: InputState) {
+    if (!this.stuntAir) return;
+    if (Math.abs(this.stuntRoll) > 0.4) {
+      if (inp.roll !== 0 && !this.kickflip) {
+        this.kickflip = true;
+        this.flipFrom = this.stuntRoll;
+        this.flipTo = this.stuntRoll + inp.roll * Math.PI * 3;
+        this.flipTo = Math.round(this.flipTo / (Math.PI * 2)) * Math.PI * 2;
+        this.flipDur = KICKFLIP_TIME;
+        this.flipT = 0;
+        this.tricks++;
+        this.bd.tricks++;
+        this.addCombo();
+        this.nitro = Math.min(100, this.nitro + 20);
+        this.events.onPopup('KICKFLIP', 0, 'gold');
+        this.events.onHint(null);
+        this.activeHint = null;
+        sfx.roll();
+      } else if (this.flipT < 0 && this.airTime > 0.55) {
+        this.flipFrom = this.stuntRoll;
+        this.flipTo = 0;
+        this.flipDur = 0.7;
+        this.flipT = 0;
+      }
+    }
+    if (this.flipT >= 0) {
+      this.flipT = Math.min(1, this.flipT + dt / this.flipDur);
+      const e = this.flipT < 0.5 ? 2 * this.flipT * this.flipT : 1 - Math.pow(-2 * this.flipT + 2, 2) / 2;
+      this.stuntRoll = this.flipFrom + (this.flipTo - this.flipFrom) * e;
+      if (this.flipT >= 1) {
+        this.stuntRoll = 0;
+        this.flipT = -1;
+      }
+    }
+  }
+
+  /** Called on touchdown after a launch. Returns false when the landing was a wipeout. */
+  private finishStunt(): boolean {
+    const upright = Math.abs(wrapAngle(this.stuntRoll)) < 0.6;
+    const zone = this.stuntAir!;
+    const inZone = this.pos.z >= zone.landZ0 && this.pos.z <= zone.landZ1 && Math.abs(this.pos.x - zone.x) < 11;
+    this.stuntAir = null;
+    this.stuntRoll = 0;
+    this.flipT = -1;
+    if (!upright) {
+      this.hardLanding('STUNT WIPEOUT');
+      return false;
+    }
+    const base = this.stuntHit ? 300 : 1200;
+    const pts = Math.round((base + (this.kickflip ? 800 : 0) + (inZone ? 500 : 0)) * (1 + (this.combo - 1) * 0.25));
+    this.score += pts;
+    this.addCombo();
+    if (!this.stuntHit) {
+      this.bd.stunts++;
+      this.timeLeft += 3;
+    }
+    this.events.onCallout(this.stuntHit ? 'STUNT SCRAPED' : this.kickflip ? 'KICKFLIP LANDED! +3s' : 'STUNT CLEARED! +3s', this.stuntHit ? 'good' : 'gold');
+    this.events.onPopup(inZone ? 'BULLSEYE LANDING' : 'STUNT', pts, 'gold');
+    this.flash = Math.max(this.flash, 0.4);
+    sfx.checkpoint();
+    return true;
   }
 
   private drive(dt: number, inp: InputState) {
@@ -596,7 +770,7 @@ export class Game {
     }
 
     // ---- barrel rolls ----
-    if (inp.roll !== 0 && !this.onGround && !this.rolling && alt > 1.5) {
+    if (inp.roll !== 0 && !this.onGround && !this.rolling && alt > 1.5 && this.flipT < 0 && this.stuntRoll === 0) {
       this.rolling = true;
       this.rollDir = inp.roll;
       this.roll = 0;
@@ -623,7 +797,9 @@ export class Game {
 
     // ---- ground ----
     const g = this.world.groundHeight(this.pos.x, this.pos.z);
-    if (this.pos.y <= g) {
+    if (this.rail) {
+      // the corkscrew deck carries the car; skip terrain contact
+    } else if (this.pos.y <= g) {
       const impact = -this.vel.y;
       this.pos.y = g;
       if (!this.onGround) this.land(impact);
@@ -658,6 +834,26 @@ export class Game {
       }
     }
 
+    // ---- stunt funnel: walls narrow the road onto the ramp deck ----
+    for (const s of this.world.stunts) {
+      if (this.rail || this.pos.z < s.funnelZ0 || this.pos.z > s.z0 || this.pos.y > 2) continue;
+      const t = (this.pos.z - s.funnelZ0) / (s.z0 - s.funnelZ0);
+      const lim = THREE.MathUtils.lerp(RAIL_X - 1.1, s.hw + 0.4, t) - 0.3 - CAR_HALF.x;
+      const dx = this.pos.x - s.x;
+      if (Math.abs(dx) > lim) {
+        const side = Math.sign(dx);
+        this.pos.x = s.x + side * lim;
+        if (this.vel.x * side > 0) {
+          if (Math.abs(this.vel.x) > 6) {
+            this.shake = Math.max(this.shake, 0.2);
+            this.sparks(this.tmp.set(this.pos.x + side, this.pos.y + 0.5, this.pos.z), 10);
+          }
+          this.vel.x *= -0.2;
+        }
+        this.heading *= 0.8;
+      }
+    }
+
     // ---- player AABB (heading-aware) ----
     const c = Math.abs(Math.cos(this.heading));
     const sn = Math.abs(Math.sin(this.heading));
@@ -666,14 +862,24 @@ export class Game {
     this.playerBox.min.set(this.pos.x - hx, this.pos.y + 0.15, this.pos.z - hz);
     this.playerBox.max.set(this.pos.x + hx, this.pos.y + 1.25, this.pos.z + hz);
 
-    if (this.invuln <= 0) {
-      for (const o of this.world.obstacles) {
-        if (this.playerBox.intersectsBox(o.box)) {
-          this.crash(o.kind === 'gantry' ? 'GANTRY HIT' : 'BARRIER HIT', null);
-          this.deflect(o.box);
-          break;
-        }
+    for (const o of this.world.obstacles) {
+      if (!this.playerBox.intersectsBox(o.box)) continue;
+      if (o.kind === 'parked' && this.vel.y <= 0 && this.pos.y > o.box.max.y - 0.6) {
+        this.pos.y = o.box.max.y;
+        this.vel.y = 9;
+        this.onGround = false;
+        const pts = 250 * this.combo;
+        this.score += pts;
+        this.nitro = Math.min(100, this.nitro + 10);
+        this.addCombo();
+        this.events.onPopup('ROOF HOP', pts, 'gold');
+        sfx.hop();
+        break;
       }
+      if (this.invuln > 0) break;
+      this.crash(o.kind === 'gantry' ? 'GANTRY HIT' : o.kind === 'parked' ? 'LINE-UP HIT' : 'BARRIER HIT', null);
+      this.deflect(o.box);
+      break;
     }
 
     // ---- traffic ----
@@ -773,13 +979,18 @@ export class Game {
   private land(impact: number) {
     const air = this.airTime;
     this.airTime = 0;
+    let stunt = false;
+    if (this.stuntAir) {
+      if (!this.finishStunt()) return;
+      stunt = true;
+    }
     if (this.rolling) {
       this.rolling = false;
       this.roll = 0;
       this.hardLanding('WIPEOUT');
       return;
     }
-    if (impact > 20) {
+    if (impact > (stunt ? 32 : 20)) {
       this.hardLanding('HARD LANDING');
       return;
     }
@@ -816,6 +1027,7 @@ export class Game {
 
   private crash(label: string, car: TrafficCar | null) {
     this.bd.crashes++;
+    if (this.stuntAir) this.stuntHit = true;
     this.combo = 1;
     this.comboTimer = 0;
     this.timeLeft -= 3;
@@ -852,7 +1064,11 @@ export class Game {
   private updateCarPose(dt: number, inp: InputState, live: boolean) {
     const fwd = this.vel.x * Math.sin(this.heading) + this.vel.z * Math.cos(this.heading);
     const accel = live ? inp.throttle : 0;
-    const targetPitch = this.onGround ? -accel * 0.03 + (this.brake ? 0.04 : 0) : THREE.MathUtils.clamp(-this.vel.y * 0.02, -0.25, 0.25);
+    const targetPitch = this.rail
+      ? -Math.atan(this.pose.slope)
+      : this.onGround
+        ? -accel * 0.03 + (this.brake ? 0.04 : 0)
+        : THREE.MathUtils.clamp(-this.vel.y * 0.02, -0.25, 0.25);
     const targetRoll = this.steer * (this.onGround ? 0.06 : 0.3) * Math.min(1, Math.abs(fwd) / 20);
     this.bodyPitch += (targetPitch - this.bodyPitch) * Math.min(1, dt * 6);
     this.bodyRoll += (targetRoll - this.bodyRoll) * Math.min(1, dt * 6);
@@ -871,7 +1087,7 @@ export class Game {
       r.position.copy(this.pos);
       r.rotation.set(0, this.heading, 0);
       const trick = this.rolling ? this.rollDir * this.roll * Math.PI * 2 : 0;
-      this.car.body.rotation.set(this.bodyPitch, 0, -this.bodyRoll + trick, 'YXZ');
+      this.car.body.rotation.set(this.bodyPitch, 0, -this.bodyRoll + trick + this.stuntRoll, 'YXZ');
       this.car.body.position.y = this.onGround ? Math.sin(this.clock * 30) * 0.004 * Math.min(1, Math.abs(this.vel.z) / 20) : 0;
     }
     this.car.setVisible(this.invuln <= 0 || Math.floor(this.invuln * 14) % 2 === 0);
@@ -990,13 +1206,22 @@ export class Game {
     const fz = Math.cos(this.heading);
     const speed = Math.hypot(this.vel.x, this.vel.z);
     const air = 1 - Math.exp(-Math.max(0, this.pos.y) / 6);
-    const dist = 7.4 + speed * 0.045 + air * 2.5;
-    const height = 2.5 + air * 2.2 + (this.mode === 'countdown' ? 0.4 : 0);
+    const stuntTarget = this.rail || this.stuntAir ? 1 : 0;
+    this.stuntCam += (stuntTarget - this.stuntCam) * Math.min(1, dt * (stuntTarget ? 2.5 : 1.2));
+    const dist = 7.4 + speed * 0.045 + air * 2.5 + this.stuntCam * 4;
+    const height = 2.5 + air * 2.2 + (this.mode === 'countdown' ? 0.4 : 0) + this.stuntCam * 2;
     const target = this.tmp.set(this.pos.x - fx * dist, this.pos.y * 0.85 + height, this.pos.z - fz * dist);
     target.y = Math.max(target.y, this.world.groundHeight(target.x, target.z) + 1.2);
+    // on the corkscrew the camera rides the tube axis so the deck never sits between it and the car
+    this.railCam += ((this.rail ? 1 : 0) - this.railCam) * Math.min(1, dt * (this.rail ? 4 : 1.5));
+    const tube = this.rail ?? this.stuntAir;
+    if (tube && this.railCam > 0.001) {
+      const up = this.stuntRoll;
+      target.lerp(this.tmp2.set(this.pos.x - Math.sin(up) * 2.4, this.pos.y + Math.cos(up) * 2.4, this.pos.z - 7.5), this.railCam);
+    }
 
     // lateral follow is looser than distance follow so steering reads on screen
-    const rate = this.mode === 'countdown' ? 1.6 : 7;
+    const rate = this.mode === 'countdown' ? 1.6 : 7 + this.railCam * 18;
     const a = 1 - Math.exp(-dt * rate);
     this.camPos.x += (target.x - this.camPos.x) * (1 - Math.exp(-dt * rate * 0.7));
     this.camPos.y += (target.y - this.camPos.y) * a;
@@ -1008,7 +1233,12 @@ export class Game {
       this.pos.y + 1.1 + air * 0.5,
       this.pos.z + fz * lookAhead
     );
-    this.camLook.lerp(lookTarget, 1 - Math.exp(-dt * 10));
+    if (this.stuntAir) lookTarget.y -= this.stuntCam * Math.max(0, this.pos.y - 2) * 0.55;
+    if (tube && this.railCam > 0.001) {
+      const up = this.stuntRoll;
+      lookTarget.lerp(this.tmp.set(this.pos.x - Math.sin(up) * 1.1, this.pos.y + Math.cos(up) * 1.1, this.pos.z + 8), this.railCam);
+    }
+    this.camLook.lerp(lookTarget, 1 - Math.exp(-dt * (this.railCam > 0.5 ? 18 : 10)));
 
     cam.position.copy(this.camPos);
     this.shake = Math.max(0, this.shake - dt * 1.8);
@@ -1018,9 +1248,10 @@ export class Game {
       cam.position.y += (Math.random() - 0.5) * s;
     }
     cam.lookAt(this.camLook);
-    cam.rotateZ(-this.bodyRoll * 0.25);
+    this.camRoll += ((this.rail ? this.stuntRoll : 0) - this.camRoll) * Math.min(1, dt * (this.rail ? 10 : 2.2));
+    cam.rotateZ(-this.bodyRoll * 0.25 - this.camRoll);
     const speed01 = Math.min(1, speed / BOOST_SPEED);
-    this.setFov(60 + speed01 * 14 + (this.boosting ? 8 : 0), dt);
+    this.setFov(60 + speed01 * 14 + (this.boosting ? 8 : 0) - this.railCam * 12, dt);
   }
 
   private setFov(f: number, dt: number) {

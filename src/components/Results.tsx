@@ -23,7 +23,7 @@ export default function Results({ result, best, newBest, onRetry, onMenu }: Prop
   const stats: [string, string][] = [
     ['Rings', `${b.rings}/${b.ringsTotal}`],
     ['Tricks', String(b.tricks)],
-    ['Near misses', String(b.nearMisses)],
+    ['Stunts', `${b.stunts}/${b.stuntsTotal}`],
     ['Top speed', `${b.topSpeed} mph`],
     ['Airtime', `${b.airtime}s`],
     ['Wipeouts', String(b.crashes + b.hardLandings)],

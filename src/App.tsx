@@ -36,6 +36,8 @@ const HINTS: Record<HintId, [string, string]> = {
   roll: ['Press Q or E in the air for a barrel roll', 'Tap ROLL in the air for a barrel roll'],
   barrier: ['Barriers ahead — fly over or steer around', 'Barriers ahead — fly over or steer around'],
   gantry: ['Gantries overhead — fly under or above them', 'Gantries overhead — fly under or above them'],
+  stunt: ['Stunt ramp ahead — it rolls you upside down. Stay centred, keep speed', 'Stunt ramp ahead — it rolls you upside down. Stay centred, keep speed'],
+  kickflip: ['Press Q or E now to kickflip upright!', 'Tap ROLL now to kickflip upright!'],
 };
 
 const BEST_KEY = 'roadster-best-v2';
