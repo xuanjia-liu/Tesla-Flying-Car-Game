@@ -1,5 +1,5 @@
-import { Gauge, Rocket, Zap } from 'lucide-react';
-import { GameStats, STAGE_NAMES, Tone } from '@/game/types';
+import { Gauge, Wind } from 'lucide-react';
+import { GameStats, STAGE_NAMES, ThrusterMode, Tone } from '@/game/types';
 
 export interface Popup {
   id: number;
@@ -36,6 +36,15 @@ function Bar({ value, color, icon, label, warn }: { value: number; color: string
     </div>
   );
 }
+
+const modeStyle: Record<ThrusterMode, string> = {
+  LAUNCH: 'border-fuchsia-300/60 bg-fuchsia-500/20 text-fuchsia-100',
+  BOOST: 'border-fuchsia-300/50 bg-fuchsia-500/15 text-fuchsia-100',
+  BRAKE: 'border-rose-300/50 bg-rose-500/15 text-rose-100',
+  GRIP: 'border-amber-200/50 bg-amber-300/15 text-amber-100',
+  HOVER: 'border-cyan-200/50 bg-cyan-400/15 text-cyan-50',
+  LANDING: 'border-cyan-200/50 bg-cyan-400/15 text-cyan-50',
+};
 
 function Progress({ progress }: { progress: number }) {
   return (
@@ -151,8 +160,20 @@ export default function Hud({ stats, popups, callouts, hint, touch }: HudProps) 
           )}
         </div>
         <div className="mt-2 space-y-1.5">
-          <Bar value={stats.energy} color="bg-gradient-to-r from-sky-400 to-cyan-200" icon={<Rocket className="h-3.5 w-3.5" />} label="THRUST" warn={stats.energy < 0.15} />
-          <Bar value={stats.nitro} color="bg-gradient-to-r from-fuchsia-500 to-pink-300" icon={<Zap className="h-3.5 w-3.5" />} label="NITRO" />
+          <Bar
+            value={stats.air}
+            color={stats.air < 0.2 ? 'bg-gradient-to-r from-rose-400 to-rose-200' : 'bg-gradient-to-r from-slate-300 via-sky-200 to-white'}
+            icon={<Wind className="h-3.5 w-3.5" />}
+            label="AIR · COPV"
+            warn={stats.air < 0.15}
+          />
+          <div className={`flex h-5 ${touch ? 'justify-start' : 'justify-center'}`}>
+            {stats.thruster && (
+              <span key={stats.thruster} className={`animate-pop rounded border px-2 py-0.5 text-[9px] font-bold tracking-[0.3em] ${modeStyle[stats.thruster]}`}>
+                {stats.thruster}
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </div>

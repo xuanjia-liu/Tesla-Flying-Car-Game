@@ -41,6 +41,8 @@ export interface EmitOptions {
   alpha?: number;
   gravity?: number;
   drag?: number;
+  /** fraction of the life spent fading in (soft puffs instead of popping into view) */
+  fadeIn?: number;
 }
 
 /** Fixed-size particle pool drawn in one call. */
@@ -56,6 +58,7 @@ export class ParticlePool {
   private alpha0: Float32Array;
   private gravity: Float32Array;
   private drag: Float32Array;
+  private fadeIn: Float32Array;
   private sizeAttr: THREE.BufferAttribute;
   private alphaAttr: THREE.BufferAttribute;
   private colorAttr: THREE.BufferAttribute;
@@ -75,6 +78,7 @@ export class ParticlePool {
     this.alpha0 = new Float32Array(n);
     this.gravity = new Float32Array(n);
     this.drag = new Float32Array(n);
+    this.fadeIn = new Float32Array(n);
     const geo = new THREE.BufferGeometry();
     this.posAttr = new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage);
     this.sizeAttr = new THREE.BufferAttribute(new Float32Array(n), 1).setUsage(THREE.DynamicDrawUsage);
@@ -122,6 +126,7 @@ export class ParticlePool {
       this.alpha0[i] = o.alpha ?? 1;
       this.gravity[i] = o.gravity ?? 0;
       this.drag[i] = o.drag ?? 1;
+      this.fadeIn[i] = o.fadeIn ?? 0;
       this.colorAttr.setXYZ(i, this.tmpColor.r, this.tmpColor.g, this.tmpColor.b);
     }
     this.colorAttr.needsUpdate = true;
@@ -146,7 +151,8 @@ export class ParticlePool {
       this.pos[i3 + 1] += this.vel[i3 + 1] * dt;
       this.pos[i3 + 2] += this.vel[i3 + 2] * dt;
       sizes[i] = this.size0[i] * (1 + (1 - t) * this.grow[i]);
-      alphas[i] = this.alpha0[i] * t;
+      const f = this.fadeIn[i];
+      alphas[i] = this.alpha0[i] * t * (f > 0 ? Math.min(1, (1 - t) / f) : 1);
     }
     this.posAttr.needsUpdate = true;
     this.sizeAttr.needsUpdate = true;

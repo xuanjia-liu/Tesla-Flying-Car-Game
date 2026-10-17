@@ -2,7 +2,7 @@
 
 ## 3D models
 
-- **Hero roadster** (`public/models/roadster.glb`) — original low-poly model built procedurally in Blender by `tools/blender/build_hero_car.py`, styled after Tesla's next-gen Roadster as revealed in October 2026: wedge nose, slim front light bar with pop-down lamps, wraparound glass canopy, full-width rear light bar, four-nozzle diffuser and active wing. No third-party geometry is used. Released with this repository. Tesla and Roadster are trademarks of Tesla, Inc.; this is an unofficial fan project.
+- **Hero roadster** (`public/models/roadster.glb`) — original low-poly model built procedurally in Blender by `tools/blender/build_hero_car.py`, styled after Tesla's next-gen Roadster as revealed in October 2026: wedge nose, slim front light bar with pop-down lamps, wraparound glass canopy, full-width rear light bar and the SpaceX Package hardware: 10 cold-gas thruster nozzles (the rear mains sit behind a drop-down licence plate), four underbody vacuum fans in the diffuser and an active variable-angle rear wing. No third-party geometry is used. Released with this repository. Tesla and Roadster are trademarks of Tesla, Inc.; this is an unofficial fan project.
 - **Parked Semi and Cybertruck** in the stunt line-ups — original procedural geometry in `src/game/stunts.ts`.
 - **Traffic cars, buildings and props** (packed into `public/models/props.glb`) — from Kenney's [Car Kit](https://kenney.nl/assets/car-kit) and [City Kit (Commercial)](https://kenney.nl/assets/city-kit-commercial), © Kenney ([kenney.nl](https://www.kenney.nl)), licensed [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/). Attribution is not required but appreciated.
 
@@ -13,6 +13,7 @@ Rebuild both files with `tools/build-assets.sh` (needs Blender 4.x and the two K
 The car and the stunt section were designed from public coverage of the October 15, 2026 Roadster reveal; no images or footage are included in the game.
 
 - Car design: [Car and Driver exterior gallery](https://www.caranddriver.com/photos/a74152579/tesla-roadster-revealed-exterior-gallery/) and [design changes article](https://www.caranddriver.com/news/a74158531/2029-tesla-roadster-design-changes/).
+- SpaceX Package (cold-gas thrusters fed by compressed-air COPVs that an onboard compressor refills; launch, braking, downforce, hops and attitude control; vacuum fans and active wing): the project's own spec and three reference stills (rear thrusters, flip over the line-up, hover beside the ramp). The stills were used only as reference and are not included.
 - Stunts ("The Ramp" inverted curved ramp and "The Kickflip" over parked Tesla vehicles): [The Verge](https://www.theverge.com/transportation/1012552/tesla-roadster-next-gen-reveal-elon-musk), [Road & Track](https://www.roadandtrack.com/news/a74159440/tesla-roadster-flip-float-launch-control-0-60-mph-videos/), [Engadget](https://www.engadget.com/2288448/relive-tesla-ridiculously-fun-roadster-stunt-show/).
 
 ## Audio, textures and sky

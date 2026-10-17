@@ -14,8 +14,8 @@ import { GameEvents, GameOverResult, GameState, GameStats, HintId, PAINTS } from
 const EMPTY_STATS: GameStats = {
   score: 0,
   timeLeft: 35,
-  energy: 1,
-  nitro: 0.4,
+  air: 1,
+  thruster: null,
   speed: 0,
   combo: 1,
   comboTimer: 0,
@@ -30,9 +30,10 @@ const EMPTY_STATS: GameStats = {
 
 const HINTS: Record<HintId, [string, string]> = {
   drive: ['W to accelerate · A / D to steer', 'Auto-throttle on · drag the left side to steer'],
-  fly: ['Tap SPACE to hop — hold it to fly', 'Tap THRUST to hop — hold it to fly'],
+  fly: ['Tap SPACE to hop on the down thrusters — hold for a short hover', 'Tap HOP to hop on the down thrusters — hold for a short hover'],
   ramp: ['Ramp ahead — hit it fast and thread the rings', 'Ramp ahead — hit it fast and thread the rings'],
-  nitro: ['SHIFT fires nitro — rings and tricks refill it', 'Hold NITRO to boost — rings and tricks refill it'],
+  boost: ['SHIFT drops the plate and fires the rear mains — S fires the front ones to brake', 'Hold BOOST to fire the rear mains — BRAKE fires the front ones'],
+  grip: ['Hard corners at speed fire the side pods upward for extra grip', 'Hard corners at speed fire the side pods upward for extra grip'],
   roll: ['Press Q or E in the air for a barrel roll', 'Tap ROLL in the air for a barrel roll'],
   barrier: ['Barriers ahead — fly over or steer around', 'Barriers ahead — fly over or steer around'],
   gantry: ['Gantries overhead — fly under or above them', 'Gantries overhead — fly under or above them'],
