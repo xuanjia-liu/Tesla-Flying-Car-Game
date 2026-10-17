@@ -11,6 +11,17 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          three: ['three'],
+          react: ['react', 'react-dom'],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 800,
+  },
   optimizeDeps: {
     exclude: ['lucide-react'],
   },
