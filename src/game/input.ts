@@ -1,138 +1,123 @@
 export interface InputState {
-  forward: number; // 1 accelerate, -1 brake/reverse
-  steer: number; // -1 left, 1 right
-  hop: boolean;
-  flip: boolean; // edge-triggered per frame
+  throttle: number; // -1 brake/reverse .. 1 accelerate
+  steer: number; // -1 left .. 1 right
+  thrust: boolean;
+  thrustPressed: boolean; // edge
   boost: boolean;
-  cushion: boolean; // edge-triggered per frame: fire landing jets
-  pauseQueued: boolean;
+  roll: -1 | 0 | 1; // edge: barrel roll direction
 }
 
-type KeyHandler = (state: InputState, down: boolean) => void;
+export interface TouchState {
+  steer: number;
+  thrust: boolean;
+  boost: boolean;
+  brake: boolean;
+}
 
-const MOVE_KEYS = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+const BLOCK_DEFAULT = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight']);
 
+/**
+ * Merges keyboard, gamepad and touch every frame. Each source keeps its own state,
+ * so releasing one never leaves another stuck on.
+ */
 export class InputManager {
-  private held = new Set<string>();
-  private flipQueued = false;
-  private cushionQueued = false;
-  private pauseQueued = false;
-  private touch = { steer: 0, forward: 0, hop: false, boost: false, flipQueued: false, cushionQueued: false };
-  state: InputState = { forward: 0, steer: 0, hop: false, flip: false, boost: false, cushion: false, pauseQueued: false };
+  private keys = new Set<string>();
+  private rollQueue: -1 | 0 | 1 = 0;
+  private thrustWasDown = false;
+  private padRollWas = false;
+  touch: TouchState = { steer: 0, thrust: false, boost: false, brake: false };
+  touchActive = false;
+  onPause: (() => void) | null = null;
+  onAnyInput: (() => void) | null = null;
 
   private onKeyDown = (e: KeyboardEvent) => {
-    if (MOVE_KEYS.has(e.code)) e.preventDefault();
+    if (BLOCK_DEFAULT.has(e.code) && !(e.target instanceof HTMLInputElement)) e.preventDefault();
+    this.onAnyInput?.();
     if (e.repeat) return;
-    this.applyKey(e.code, true);
+    this.keys.add(e.code);
+    if (e.code === 'Escape' || e.code === 'KeyP') this.onPause?.();
+    if (e.code === 'KeyQ') this.rollQueue = -1;
+    if (e.code === 'KeyE' || e.code === 'KeyJ') this.rollQueue = 1;
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
-    this.applyKey(e.code, false);
+    this.keys.delete(e.code);
   };
 
-  private applyKey(code: string, down: boolean) {
-    const s = this.state;
-    switch (code) {
-      case 'ArrowUp':
-      case 'KeyW':
-        s.forward = down ? 1 : s.forward === 1 ? 0 : s.forward;
-        break;
-      case 'ArrowDown':
-      case 'KeyS':
-        s.forward = down ? -1 : s.forward === -1 ? 0 : s.forward;
-        break;
-      case 'ArrowLeft':
-      case 'KeyA':
-        s.steer = down ? -1 : s.steer === -1 ? 0 : s.steer;
-        break;
-      case 'ArrowRight':
-      case 'KeyD':
-        s.steer = down ? 1 : s.steer === 1 ? 0 : s.steer;
-        break;
-      case 'Space':
-        // in air: tap fires the cushion jets; on ground: hop
-        if (down) {
-          this.cushionQueued = true;
-          s.hop = true;
-        } else {
-          s.hop = false;
-        }
-        break;
-      case 'KeyJ':
-        if (down) this.flipQueued = true;
-        break;
-      case 'ShiftLeft':
-      case 'ShiftRight':
-      case 'KeyK':
-        s.boost = down;
-        break;
-      case 'KeyX':
-        if (down) this.cushionQueued = true;
-        break;
-      case 'Escape':
-      case 'KeyP':
-        if (down) this.pauseQueued = true;
-        break;
-    }
-    if (down) this.held.add(code);
-    else this.held.delete(code);
-  }
-
   private onBlur = () => {
-    this.held.clear();
-    this.state = { forward: 0, steer: 0, hop: false, flip: false, boost: false, cushion: false, pauseQueued: false };
-    this.touch = { steer: 0, forward: 0, hop: false, boost: false, flipQueued: false, cushionQueued: false };
+    this.keys.clear();
+    this.touch = { steer: 0, thrust: false, boost: false, brake: false };
+  };
+
+  private onTouchStart = () => {
+    this.touchActive = true;
   };
 
   attach() {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
+    window.addEventListener('touchstart', this.onTouchStart, { passive: true });
   }
 
   detach() {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
+    window.removeEventListener('touchstart', this.onTouchStart);
   }
 
-  /** Call once per frame before reading state */
-  beginFrame() {
-    this.state.flip = this.flipQueued || this.touch.flipQueued;
-    this.state.cushion = this.cushionQueued || this.touch.cushionQueued;
-    this.state.pauseQueued = this.pauseQueued;
-    this.flipQueued = false;
-    this.cushionQueued = false;
-    this.pauseQueued = false;
-    this.touch.flipQueued = false;
-    this.touch.cushionQueued = false;
+  queueRoll(dir: -1 | 1) {
+    this.rollQueue = dir;
   }
 
-  consumePause(): boolean {
-    const p = this.state.pauseQueued;
-    this.state.pauseQueued = false;
-    return p;
+  private has(...codes: string[]) {
+    return codes.some((c) => this.keys.has(c));
   }
 
-  setTouch(part: Partial<TouchInput>) {
-    if (part.flipQueued) this.touch.flipQueued = true;
-    if (part.cushionQueued) this.touch.cushionQueued = true;
-    Object.assign(this.touch, part);
-  }
+  sample(): InputState {
+    let throttle = (this.has('KeyW', 'ArrowUp') ? 1 : 0) - (this.has('KeyS', 'ArrowDown') ? 1 : 0);
+    let steer = (this.has('KeyD', 'ArrowRight') ? 1 : 0) - (this.has('KeyA', 'ArrowLeft') ? 1 : 0);
+    let thrust = this.has('Space');
+    let boost = this.has('ShiftLeft', 'ShiftRight', 'KeyK');
+    let roll = this.rollQueue;
+    this.rollQueue = 0;
 
-  applyTouch(s: InputState) {
-    if (this.touch.steer !== 0) s.steer = this.touch.steer;
-    if (this.touch.forward !== 0) s.forward = this.touch.forward;
-    if (this.touch.hop) s.hop = true;
-    if (this.touch.boost) s.boost = true;
-  }
-}
+    const pad = navigator.getGamepads?.().find((g) => g && g.connected);
+    if (pad) {
+      const ax = pad.axes[0] ?? 0;
+      if (Math.abs(ax) > 0.15) steer = ax;
+      const rt = pad.buttons[7]?.value ?? 0;
+      const lt = pad.buttons[6]?.value ?? 0;
+      if (rt > 0.05 || lt > 0.05) throttle = rt - lt;
+      if (pad.buttons[0]?.pressed) thrust = true;
+      if (pad.buttons[2]?.pressed || pad.buttons[5]?.pressed) boost = true;
+      const rollBtn = !!(pad.buttons[1]?.pressed || pad.buttons[3]?.pressed);
+      if (rollBtn && !this.padRollWas) roll = steer < -0.2 ? -1 : 1;
+      this.padRollWas = rollBtn;
+      if (pad.buttons[9]?.pressed && !this.keys.has('__padStart')) {
+        this.keys.add('__padStart');
+        this.onPause?.();
+      } else if (!pad.buttons[9]?.pressed) this.keys.delete('__padStart');
+    }
 
-export interface TouchInput {
-  steer: number;
-  forward: number;
-  hop: boolean;
-  boost: boolean;
-  flipQueued: boolean;
-  cushionQueued: boolean;
+    if (this.touchActive) {
+      if (this.touch.steer !== 0) steer = this.touch.steer;
+      // touch play auto-accelerates; the brake button overrides
+      if (throttle === 0) throttle = this.touch.brake ? -1 : 1;
+      thrust ||= this.touch.thrust;
+      boost ||= this.touch.boost;
+    }
+
+    const thrustPressed = thrust && !this.thrustWasDown;
+    this.thrustWasDown = thrust;
+    return {
+      throttle: Math.max(-1, Math.min(1, throttle)),
+      steer: Math.max(-1, Math.min(1, steer)),
+      thrust,
+      thrustPressed,
+      boost,
+      roll,
+    };
+  }
 }

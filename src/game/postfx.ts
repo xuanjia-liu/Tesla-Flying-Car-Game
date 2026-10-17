@@ -5,12 +5,13 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
-const SpeedVignetteShader = {
+const FinalShader = {
   uniforms: {
     tDiffuse: { value: null },
-    uSpeed01: { value: 0 },
-    uRedFlash: { value: 0 },
+    uSpeed: { value: 0 },
+    uFlash: { value: 0 },
     uAspect: { value: 1 },
+    uTime: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -21,44 +22,38 @@ const SpeedVignetteShader = {
   `,
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
-    uniform float uSpeed01;
-    uniform float uRedFlash;
+    uniform float uSpeed;
+    uniform float uFlash;
     uniform float uAspect;
+    uniform float uTime;
     varying vec2 vUv;
 
-    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float hash(float n) { return fract(sin(n) * 43758.5453); }
 
     void main() {
-      vec2 uv = vUv;
-      vec2 centered = (uv - 0.5) * vec2(uAspect, 1.0);
-      float r = length(centered);
+      vec2 c = (vUv - 0.5) * vec2(uAspect, 1.0);
+      float r = length(c);
+      // subtle chromatic offset that grows with speed
+      vec2 dir = normalize(c + 1e-5);
+      float ca = 0.0015 + uSpeed * 0.004;
+      vec3 col;
+      col.r = texture2D(tDiffuse, vUv + dir * ca * r).r;
+      col.g = texture2D(tDiffuse, vUv).g;
+      col.b = texture2D(tDiffuse, vUv - dir * ca * r).b;
 
-      vec4 col = texture2D(tDiffuse, uv);
-
-      // radial speed lines on boost
-      if (uSpeed01 > 0.02) {
-        float strength = (uSpeed01 - 0.02) * 1.1;
-        vec2 dir = normalize(centered + vec2(1e-4));
-        float ang = atan(centered.y, centered.x);
-        float lane = floor((ang / 6.2831 + 0.5) * 36.0);
-        float gate = step(0.72, hash(vec2(lane, 7.0)));
-        float line = 0.0;
-        for (int i = 1; i <= 4; i++) {
-          float t = float(i) * 0.014 * (0.7 + strength * 0.8);
-          line += texture2D(tDiffuse, uv - dir * t).g * 0.22;
-        }
-        col.rgb += vec3(0.9, 0.95, 1.0) * line * gate * strength * smoothstep(0.22, 0.7, r);
+      // streaking speed lines at the edges
+      if (uSpeed > 0.01) {
+        float ang = atan(c.y, c.x);
+        float lane = floor((ang / 6.2831 + 0.5) * 90.0);
+        float h = hash(lane * 1.7 + floor(uTime * 14.0 + hash(lane) * 10.0));
+        float line = step(0.82, h) * smoothstep(0.32, 0.85, r);
+        col += vec3(0.85, 0.92, 1.0) * line * uSpeed * 0.35;
       }
 
-      // light vignette
-      float vig = smoothstep(0.98, 0.35, r);
-      col.rgb *= mix(0.74, 1.0, vig);
-
-      // red screen-edge flash on crash
-      float edge = smoothstep(0.3, 0.78, r);
-      col.rgb = mix(col.rgb, vec3(0.95, 0.1, 0.1), edge * uRedFlash * 0.55);
-
-      gl_FragColor = col;
+      float vig = smoothstep(1.05, 0.35, r);
+      col *= mix(0.62, 1.0, vig);
+      col = mix(col, vec3(1.0, 0.12, 0.15), smoothstep(0.25, 0.85, r) * uFlash * 0.6);
+      gl_FragColor = vec4(col, 1.0);
     }
   `,
 };
@@ -66,30 +61,38 @@ const SpeedVignetteShader = {
 export class PostFX {
   composer: EffectComposer;
   private bloom: UnrealBloomPass;
-  private speedPass: ShaderPass;
+  private final: ShaderPass;
 
-  constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, width: number, height: number) {
+  constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, w: number, h: number) {
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(new RenderPass(scene, camera));
-
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(width, height), 0.22, 0.4, 1.05);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(w / 2, h / 2), 0.5, 0.45, 2.2);
     this.composer.addPass(this.bloom);
-
-    this.speedPass = new ShaderPass(SpeedVignetteShader);
-    this.composer.addPass(this.speedPass);
-
     this.composer.addPass(new OutputPass());
-    this.composer.setSize(width, height);
+    this.final = new ShaderPass(FinalShader);
+    this.composer.addPass(this.final);
+    this.setSize(w, h);
   }
 
-  update(speed01: number, redFlash: number, aspect: number) {
-    this.speedPass.uniforms.uSpeed01.value = speed01;
-    this.speedPass.uniforms.uRedFlash.value = redFlash;
-    this.speedPass.uniforms.uAspect.value = aspect;
+  setBloom(enabled: boolean) {
+    this.bloom.enabled = enabled;
   }
 
-  setSize(width: number, height: number) {
-    this.composer.setSize(width, height);
-    this.bloom.setSize(width, height);
+  update(speed: number, flash: number, aspect: number, time: number, bloomStrength: number) {
+    const u = this.final.uniforms;
+    u.uSpeed.value = speed;
+    u.uFlash.value = flash;
+    u.uAspect.value = aspect;
+    u.uTime.value = time;
+    this.bloom.strength = bloomStrength;
+  }
+
+  setSize(w: number, h: number) {
+    this.composer.setSize(w, h);
+    this.bloom.resolution.set(w / 2, h / 2);
+  }
+
+  render() {
+    this.composer.render();
   }
 }

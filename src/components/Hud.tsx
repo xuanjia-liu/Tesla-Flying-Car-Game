@@ -1,170 +1,160 @@
-import { GameStats, COURSE_FINISH, TANK_RESERVE_FRACTION } from '@/game/types';
+import { Gauge, Rocket, Zap } from 'lucide-react';
+import { GameStats, STAGE_NAMES, Tone } from '@/game/types';
 
 export interface Popup {
   id: number;
   label: string;
   points: number;
-  tone: 'good' | 'bad';
+  tone: Tone;
+}
+
+export interface Callout {
+  id: number;
+  text: string;
+  tone: Tone;
+}
+
+const toneText: Record<Tone, string> = {
+  good: 'text-cyan-200',
+  gold: 'text-amber-200',
+  bad: 'text-rose-300',
+};
+
+function Bar({ value, color, icon, label, warn }: { value: number; color: string; icon: React.ReactNode; label: string; warn?: boolean }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className={`shrink-0 ${warn ? 'text-rose-300 animate-pulse' : 'text-white/70'}`}>{icon}</div>
+      <div className="flex-1">
+        <div className="mb-1 flex justify-between text-[9px] font-semibold tracking-[0.25em] text-white/50">
+          <span>{label}</span>
+          <span className="tabular-nums">{Math.round(value * 100)}</span>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+          <div className={`h-full rounded-full ${color} transition-[width] duration-100`} style={{ width: `${value * 100}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Progress({ progress }: { progress: number }) {
+  return (
+    <div className="relative mx-auto mt-2 h-1 w-48 rounded-full bg-white/15 sm:w-72">
+      <div className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-cyan-300 to-fuchsia-400" style={{ width: `${progress * 100}%` }} />
+      {[1 / 3, 2 / 3].map((p) => (
+        <div key={p} className={`absolute -top-1 h-3 w-0.5 rounded ${progress >= p ? 'bg-cyan-200' : 'bg-white/40'}`} style={{ left: `${p * 100}%` }} />
+      ))}
+      <div className="absolute -top-1.5 right-0 h-4 w-1 rounded bg-fuchsia-300" />
+      <div
+        className="absolute -top-[5px] h-3.5 w-3.5 -translate-x-1/2 rounded-full border-2 border-cyan-200 bg-ink shadow-[0_0_12px_rgba(56,216,255,0.9)]"
+        style={{ left: `${progress * 100}%` }}
+      />
+    </div>
+  );
 }
 
 interface HudProps {
   stats: GameStats;
   popups: Popup[];
+  callouts: Callout[];
+  hint: string | null;
+  touch: boolean;
 }
 
-function TankGauge({ value }: { value: number }) {
-  const pct = Math.round(value * 100);
-  const reserve = Math.round(TANK_RESERVE_FRACTION * 100);
-  const low = pct < reserve + 10;
-  return (
-    <div className="w-40">
-      <div className="flex justify-between text-[10px] tracking-[0.2em] text-white/60 mb-1">
-        <span>THRUST TANK</span>
-        <span className={low ? 'text-red-300' : 'text-sky-300'}>{pct}%</span>
-      </div>
-      <div className="relative h-2.5 rounded-full bg-white/10 overflow-hidden">
-        {/* reserve zone — hovering can't eat into this */}
-        <div
-          className="absolute right-0 top-0 h-full bg-emerald-400/25 border-l border-emerald-300/70"
-          style={{ width: `${reserve}%` }}
-        />
-        <div
-          className={`absolute left-0 top-0 h-full rounded-l-full transition-all duration-150 ${
-            low ? 'bg-red-400' : 'bg-sky-400'
-          }`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <div className="text-[9px] text-emerald-300/70 mt-0.5 tracking-wider">RESERVE: LANDING JETS</div>
-    </div>
-  );
-}
-
-function Speedometer({ speed }: { speed: number }) {
-  const mph = Math.round(speed * 2.237);
-  const maxMph = 140;
-  const frac = Math.min(1, speed * 2.237 / maxMph);
-  const gear = mph < 5 ? 1 : mph < 25 ? 2 : mph < 50 ? 3 : mph < 80 ? 4 : mph < 110 ? 5 : 6;
-  const angle = -220 * frac + 110;
-  return (
-    <div className="relative w-24 h-24 md:w-28 md:h-28">
-      <div className="absolute inset-0 rounded-full bg-black/45 border-2 border-white/20 backdrop-blur-sm" />
-      <svg viewBox="0 0 100 100" className="absolute inset-0">
-        <path d="M 18 82 A 42 42 0 1 1 82 82" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="6" strokeLinecap="round" />
-        <path
-          d="M 18 82 A 42 42 0 1 1 82 82"
-          fill="none"
-          stroke={frac > 0.85 ? '#f87171' : '#7fd4ff'}
-          strokeWidth="6"
-          strokeLinecap="round"
-          strokeDasharray={`${frac * 198} 400`}
-        />
-      </svg>
-      <div
-        className="absolute left-1/2 top-1/2 w-0.5 h-8 origin-bottom bg-white/90"
-        style={{ transform: `translate(-50%, -100%) rotate(${angle}deg)`, transformOrigin: '50% 100%' }}
-      />
-      <div className="absolute left-1/2 top-1/2 w-2 h-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white" />
-      <div className="absolute inset-x-0 bottom-4 text-center">
-        <div className="text-lg font-bold text-white tabular-nums leading-none">{mph}</div>
-        <div className="text-[8px] tracking-[0.2em] text-white/50">MPH · G{gear}</div>
-      </div>
-    </div>
-  );
-}
-
-function Minimap({ distance }: { distance: number }) {
-  const frac = Math.min(1, distance / COURSE_FINISH);
-  return (
-    <div className="w-28">
-      <div className="flex justify-between text-[9px] tracking-[0.2em] text-white/50 mb-1">
-        <span>START</span>
-        <span>FINISH {Math.max(0, COURSE_FINISH - distance)}m</span>
-      </div>
-      <div className="relative h-1.5 rounded-full bg-white/10 overflow-visible">
-        <div className="absolute left-0 top-0 h-full rounded-full bg-sky-400/70" style={{ width: `${frac * 100}%` }} />
-        <div
-          className="absolute -top-1 w-3.5 h-3.5 rounded-full bg-white border-2 border-sky-300 shadow"
-          style={{ left: `calc(${frac * 100}% - 7px)` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-export default function Hud({ stats, popups }: HudProps) {
-  const seconds = Math.ceil(stats.timeLeft);
-  const urgent = stats.timeLeft < 10;
+export default function Hud({ stats, popups, callouts, hint, touch }: HudProps) {
+  const secs = Math.max(0, stats.timeLeft);
+  const urgent = secs < 10 && stats.countdown <= 0;
+  const mph = Math.round(stats.speed * 2.237);
   const counting = stats.countdown > 0;
+  const cd = Math.ceil(stats.countdown);
 
   return (
-    <div className="pointer-events-none absolute inset-0 select-none">
-      {/* top left: score + combo */}
-      <div className="absolute top-3 left-3 md:top-6 md:left-6">
-        <div className="text-[10px] tracking-[0.25em] text-white/50">SCORE</div>
-        <div className="text-3xl md:text-4xl font-bold text-white tabular-nums leading-tight">{stats.score}</div>
+    <div className="pointer-events-none absolute inset-0 select-none" style={{ padding: 'env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)' }}>
+      {/* score + combo */}
+      <div className="absolute left-4 top-3 sm:left-6 sm:top-5">
+        <div className="label">Score</div>
+        <div className="font-display text-2xl font-extrabold tabular-nums leading-tight sm:text-4xl">{stats.score.toLocaleString()}</div>
         {stats.combo > 1 && (
-          <div className="mt-1 inline-block px-2 py-0.5 rounded bg-amber-400/25 border border-amber-300/60 text-amber-200 text-xs font-bold tracking-widest">
-            ×{stats.combo} COMBO
+          <div key={stats.combo} className="mt-1 w-28 animate-pop">
+            <div className="flex items-baseline gap-1 font-display font-extrabold text-amber-300">
+              <span className="text-xl sm:text-2xl">×{stats.combo}</span>
+              <span className="text-[10px] tracking-[0.25em] text-amber-200/80">COMBO</span>
+            </div>
+            <div className="mt-0.5 h-1 rounded-full bg-white/10">
+              <div className="h-full rounded-full bg-amber-300" style={{ width: `${stats.comboTimer * 100}%` }} />
+            </div>
           </div>
         )}
       </div>
 
-      {/* top center: timer */}
-      <div className="absolute top-3 left-1/2 -translate-x-1/2 text-center">
-        <div className="text-[10px] tracking-[0.25em] text-white/50">TIME</div>
-        <div
-          className={`text-4xl md:text-5xl font-bold tabular-nums leading-tight ${
-            urgent ? 'text-red-400 animate-pulse' : 'text-white'
-          }`}
-        >
-          :{Math.max(0, seconds).toString().padStart(2, '0')}
+      {/* timer + stage + progress */}
+      <div className="absolute left-1/2 top-2 -translate-x-1/2 text-center sm:top-4">
+        <div className={`font-display text-3xl font-black tabular-nums leading-none sm:text-5xl ${urgent ? 'animate-pulse text-rose-400' : 'text-white'}`}>
+          {Math.floor(secs)}
+          <span className="text-lg sm:text-2xl">.{Math.floor((secs % 1) * 10)}</span>
         </div>
+        <div className="mt-1 text-[9px] font-semibold tracking-[0.35em] text-white/55 sm:text-[10px]">{STAGE_NAMES[stats.stage]}</div>
+        <Progress progress={stats.progress} />
       </div>
 
-      {/* top right: minimap */}
-      <div className="absolute top-3 right-3 md:top-6 md:right-6">
-        <Minimap distance={stats.distance} />
-      </div>
-
-      {/* right-middle: stacked popups */}
-      <div className="absolute right-3 md:right-6 top-28 md:top-36 flex flex-col items-end gap-1">
+      {/* popups */}
+      <div className={`absolute right-4 flex flex-col items-end gap-1 sm:right-6 ${touch ? 'top-16' : 'top-24 sm:top-28'}`}>
         {popups.map((p) => (
-          <div
-            key={p.id}
-            className={`px-2.5 py-1 rounded text-right backdrop-blur ${
-              p.tone === 'good' ? 'bg-emerald-500/15 border border-emerald-400/40' : 'bg-red-500/20 border border-red-400/50'
-            }`}
-          >
-            <div className={`text-xs font-bold tracking-wider ${p.tone === 'good' ? 'text-emerald-300' : 'text-red-300'}`}>
-              {p.label}
-              {p.points > 0 && <span className="ml-2 tabular-nums">+{p.points}</span>}
-            </div>
+          <div key={p.id} className="animate-rise text-right">
+            <span className={`font-display text-xs font-extrabold tracking-wider sm:text-sm ${toneText[p.tone]}`}>{p.label}</span>
+            {p.points > 0 && <span className="ml-2 font-display text-xs font-bold tabular-nums text-white sm:text-sm">+{p.points.toLocaleString()}</span>}
           </div>
         ))}
       </div>
 
-      {/* bottom left: tank */}
-      <div className="absolute bottom-24 md:bottom-6 left-3 md:left-6">
-        <TankGauge value={stats.tank} />
-      </div>
-
-      {/* bottom right: speedometer */}
-      <div className="absolute bottom-24 md:bottom-6 right-3 md:right-6">
-        <Speedometer speed={stats.speed} />
-      </div>
+      {/* big callouts */}
+      {callouts.map((c) => (
+        <div
+          key={c.id}
+          className={`absolute left-1/2 top-[30%] animate-callout whitespace-nowrap font-display text-3xl font-black tracking-wider sm:text-6xl ${
+            c.tone === 'bad' ? 'text-rose-400' : c.tone === 'gold' ? 'text-amber-200' : 'text-white text-glow'
+          }`}
+          style={{ textShadow: c.tone === 'bad' ? '0 0 24px rgba(255,60,80,.7)' : undefined }}
+        >
+          {c.text}
+        </div>
+      ))}
 
       {/* countdown */}
       {counting && (
         <div className="absolute inset-0 flex items-center justify-center">
-          <div
-            key={Math.ceil(stats.countdown)}
-            className="text-8xl md:text-9xl font-bold text-white drop-shadow-[0_0_30px_rgba(127,212,255,0.8)] animate-[pop_0.4s_ease-out]"
-          >
-            {Math.ceil(stats.countdown) > 0 ? Math.ceil(stats.countdown) : 'GO!'}
+          <div key={cd} className="animate-pop font-display text-8xl font-black text-white text-glow sm:text-9xl">
+            {cd > 3 ? '' : cd > 0 ? cd : 'GO'}
           </div>
         </div>
       )}
+
+      {/* contextual hint */}
+      {hint && (
+        <div className={`absolute inset-x-0 flex animate-fadeup justify-center ${touch ? 'top-[7.5rem]' : 'bottom-36 sm:bottom-40'}`}>
+          <div className="glass rounded-full px-4 py-2 text-center text-xs font-semibold tracking-wide text-white/90 sm:text-sm">{hint}</div>
+        </div>
+      )}
+
+      {/* speed + meters */}
+      <div className={`absolute ${touch ? 'bottom-14 left-6 w-40' : 'bottom-5 left-1/2 w-72 -translate-x-1/2 sm:bottom-7'}`}>
+        <div className={`flex items-end gap-2 ${touch ? 'justify-start' : 'justify-center'}`}>
+          <Gauge className="mb-1.5 h-4 w-4 text-white/50" />
+          <span className={`font-display font-black tabular-nums leading-none ${touch ? 'text-3xl' : 'text-5xl'} ${stats.boosting ? 'text-fuchsia-300' : 'text-white'}`}>
+            {mph}
+          </span>
+          <span className="mb-1 text-[10px] font-semibold tracking-[0.25em] text-white/50">MPH</span>
+          {stats.airborne && stats.altitude > 1 && (
+            <span className="mb-1 ml-1 rounded bg-cyan-400/15 px-1.5 py-0.5 text-[10px] font-bold tracking-widest text-cyan-200">
+              ALT {Math.round(stats.altitude)}m
+            </span>
+          )}
+        </div>
+        <div className="mt-2 space-y-1.5">
+          <Bar value={stats.energy} color="bg-gradient-to-r from-sky-400 to-cyan-200" icon={<Rocket className="h-3.5 w-3.5" />} label="THRUST" warn={stats.energy < 0.15} />
+          <Bar value={stats.nitro} color="bg-gradient-to-r from-fuchsia-500 to-pink-300" icon={<Zap className="h-3.5 w-3.5" />} label="NITRO" />
+        </div>
+      </div>
     </div>
   );
 }
