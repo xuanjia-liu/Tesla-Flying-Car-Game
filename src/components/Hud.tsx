@@ -131,14 +131,14 @@ export default function Hud({ stats, popups, callouts, hint, touch }: HudProps) 
 
       {/* contextual hint */}
       {hint && (
-        <div className={`absolute left-1/2 -translate-x-1/2 animate-fadeup ${touch ? 'top-24' : 'bottom-36 sm:bottom-40'}`}>
+        <div className={`absolute inset-x-0 flex animate-fadeup justify-center ${touch ? 'top-[7.5rem]' : 'bottom-36 sm:bottom-40'}`}>
           <div className="glass rounded-full px-4 py-2 text-center text-xs font-semibold tracking-wide text-white/90 sm:text-sm">{hint}</div>
         </div>
       )}
 
       {/* speed + meters */}
-      <div className={`absolute left-1/2 -translate-x-1/2 ${touch ? 'bottom-3 w-44' : 'bottom-5 w-72 sm:bottom-7'}`}>
-        <div className="flex items-end justify-center gap-2">
+      <div className={`absolute ${touch ? 'bottom-14 left-6 w-40' : 'bottom-5 left-1/2 w-72 -translate-x-1/2 sm:bottom-7'}`}>
+        <div className={`flex items-end gap-2 ${touch ? 'justify-start' : 'justify-center'}`}>
           <Gauge className="mb-1.5 h-4 w-4 text-white/50" />
           <span className={`font-display font-black tabular-nums leading-none ${touch ? 'text-3xl' : 'text-5xl'} ${stats.boosting ? 'text-fuchsia-300' : 'text-white'}`}>
             {mph}
