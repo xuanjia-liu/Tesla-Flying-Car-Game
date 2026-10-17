@@ -9,6 +9,7 @@ tmp=$(mktemp -d)
 "$BLENDER" -b -P tools/blender/build_hero_car.py -- "$tmp/roadster.glb"
 "$BLENDER" -b -P tools/blender/pack_props.py -- "$KENNEY_CARS" "$KENNEY_CITY" "$tmp/props.glb"
 opts=(--compress meshopt --simplify false --join false --flatten false --instance false)
-npx --yes @gltf-transform/cli optimize "$tmp/roadster.glb" public/models/roadster.glb "${opts[@]}"
+# the game looks up the car's materials by name (Paint, Glass, Light*), so palette merging must stay off
+npx --yes @gltf-transform/cli optimize "$tmp/roadster.glb" public/models/roadster.glb "${opts[@]}" --palette false
 npx --yes @gltf-transform/cli optimize "$tmp/props.glb" public/models/props.glb "${opts[@]}" --texture-compress webp
 rm -rf "$tmp"
