@@ -139,12 +139,14 @@ export class CarRig {
       this.fanGlows.push(fan);
     }
 
-    for (const side of ['L', 'R']) {
-      const nozzle = this.model.getObjectByName(`Nozzle_${side}`) ?? this.model.getObjectByName(`ThrusterGlow_${side}`);
-      if (!nozzle) continue;
+    const nozzles: THREE.Object3D[] = [];
+    this.model.traverse((o) => {
+      if (o.name.startsWith('Nozzle_')) nozzles.push(o);
+    });
+    for (const nozzle of nozzles) {
       const box = new THREE.Box3().setFromObject(nozzle);
       const center = box.getCenter(new THREE.Vector3());
-      const geo = new THREE.ConeGeometry(0.16, 2.4, 16, 1, true);
+      const geo = new THREE.ConeGeometry(0.12, 2.4, 16, 1, true);
       geo.rotateX(-Math.PI / 2);
       geo.translate(0, 0, -1.2);
       // remap uv.y so 1 = nozzle mouth, 0 = flame tip
