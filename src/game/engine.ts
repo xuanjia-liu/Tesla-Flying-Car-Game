@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { loadAssets } from './assets';
-import { CarRig } from './car';
+import { CarRig, type ThrusterGroup } from './car';
 import { Environment, lookAt, type StageLook } from './environment';
 import type { InputManager, InputState } from './input';
 import { ParticlePool } from './particles';
@@ -18,6 +18,7 @@ import {
   RAIL_X,
   ROAD_HALF_WIDTH,
   RunBreakdown,
+  ThrusterMode,
   gradeFor,
 } from './types';
 
@@ -27,13 +28,25 @@ const MAX_SPEED = 50;
 const BOOST_SPEED = 74;
 const ACCEL = 22;
 const BOOST_ACCEL = 46;
-const THRUST_ACCEL = 37;
-const HOP_VY = 8.5;
-const MAX_ALT = 24;
-const ENERGY_DRAIN = 30;
-const ENERGY_REFILL = 24;
-const HOP_COST = 6;
-const NITRO_DRAIN = 32;
+// SpaceX Package: every thruster draws on the COPV air supply (0..100), which the compressor refills
+const HOP_VY = 10;
+const HOVER_ACCEL = 36;
+const HOVER_CEIL = 14;
+const HOVER_TIME = 2.6;
+const LAUNCH_TIME = 0.45;
+const LAUNCH_ACCEL = 70;
+const CUSHION_ACCEL = 60;
+const AIR_STRAFE = 8;
+const AIR_REFILL = 18;
+const COMPRESSOR_DELAY = 0.6;
+const HOP_COST = 7;
+const LAUNCH_COST = 6;
+const REAR_DRAIN = 24;
+const FRONT_DRAIN = 30;
+const HOVER_DRAIN = 26;
+const GRIP_DRAIN = 7;
+const CUSHION_DRAIN = 30;
+const PUFF_COST = 1.2;
 const START_TIME = 35;
 const COMBO_WINDOW = 4.5;
 const ROLL_TIME = 0.62;
@@ -45,6 +58,14 @@ const KICKFLIP_TIME = 0.8;
 const wrapAngle = (a: number) => THREE.MathUtils.euclideanModulo(a + Math.PI, Math.PI * 2) - Math.PI;
 
 type Mode = 'showroom' | 'countdown' | 'race' | 'over';
+
+const VAPOUR: Record<ThrusterGroup, { rate: number; speed: number; size: number; life: number; reach: number; fog: number }> = {
+  rear: { rate: 70, speed: 30, size: 0.32, life: 0.45, reach: 1.4, fog: 10 },
+  front: { rate: 60, speed: 18, size: 0.38, life: 0.4, reach: 1.0, fog: 8 },
+  down: { rate: 55, speed: 15, size: 0.42, life: 0.45, reach: 4.2, fog: 42 },
+  side: { rate: 40, speed: 10, size: 0.28, life: 0.3, reach: 0, fog: 0 },
+};
+const FX_SCALE = { low: 0.35, medium: 0.7, high: 1 };
 
 const QUALITY = {
   low: { dpr: 1, shadows: false, shadowSize: 512, bloom: false },
@@ -62,6 +83,11 @@ export class Game {
   private car!: CarRig;
   private exhaust = new ParticlePool(600, true);
   private smoke = new ParticlePool(360, false);
+  private vapour = new ParticlePool(900, false);
+  private fog = new ParticlePool(320, false);
+  private fxAcc: number[] = [];
+  private fogAcc: number[] = [];
+  private plateWas = 0;
   private raf = 0;
   private lastT = performance.now();
   private acc = 0;
@@ -81,12 +107,24 @@ export class Game {
   private steer = 0;
   private onGround = true;
   private airTime = 0;
-  private energy = 100;
-  private nitro = 40;
+  private air = 100;
+  private compressorWait = 0;
   private padBoost = 0;
   private boosting = false;
-  private thrusting = false;
-  private hover = 0;
+  private boostWas = false;
+  private launchT = 0;
+  private hoverBurn = 0;
+  private hopFx = 0;
+  private grip = 0;
+  private landingAssist = false;
+  private cushioned = false;
+  private puffGap = 0;
+  private puffLeft = 0;
+  private puffSide = 0;
+  private puffPower = 0;
+  /** per-step thruster powers handed to the car rig */
+  private thr = { rear: 0, front: 0, down: 0, sidePos: 0, sideNeg: 0 };
+  private thrusterMode: ThrusterMode | null = null;
   private roll = 0;
   private rollDir = 0;
   private rolling = false;
@@ -141,6 +179,9 @@ export class Game {
 
   private tmp = new THREE.Vector3();
   private tmp2 = new THREE.Vector3();
+  private tmp3 = new THREE.Vector3();
+  private tmp4 = new THREE.Vector3();
+  private tmp5 = new THREE.Vector3();
   private playerBox = new THREE.Box3();
   private carBox = new THREE.Box3();
 
@@ -159,7 +200,7 @@ export class Game {
     this.env = new Environment(this.renderer, this.scene);
     this.look = lookAt(0).look;
     this.postfx = new PostFX(this.renderer, this.scene, this.camera, 1, 1);
-    this.scene.add(this.exhaust.points, this.smoke.points);
+    this.scene.add(this.exhaust.points, this.smoke.points, this.vapour.points, this.fog.points);
 
     const onResize = () => this.resize();
     window.addEventListener('resize', onResize);
@@ -196,8 +237,11 @@ export class Game {
           vel: this.vel.toArray(),
           heading: this.heading,
           onGround: this.onGround,
-          energy: this.energy,
-          nitro: this.nitro,
+          air: this.air,
+          thruster: this.thrusterMode,
+          grip: this.grip,
+          hoverBurn: this.hoverBurn,
+          plate: this.car.plateDrop,
           mode: this.mode,
           score: this.score,
           timeLeft: this.timeLeft,
@@ -212,6 +256,8 @@ export class Game {
         traffic: () => this.world.traffic.filter((t) => t.active && !t.knocked).map((t) => [...t.pos.toArray(), t.half.x, t.half.y, t.half.z, t.speed]),
         stunts: () => this.world.stunts.map((s) => [s.funnelZ0, s.z0, s.z1, s.x, s.landZ0, s.landZ1]),
         scene: this.scene,
+        camera: this.camera,
+        car: this.car.root,
       };
     }
     this.loop();
@@ -247,6 +293,8 @@ export class Game {
     this.camera.updateProjectionMatrix();
     this.exhaust.setViewportHeight(h * dpr);
     this.smoke.setViewportHeight(h * dpr);
+    this.vapour.setViewportHeight(h * dpr);
+    this.fog.setViewportHeight(h * dpr);
   }
 
   // ---------------- run lifecycle ----------------
@@ -258,9 +306,18 @@ export class Game {
     this.steer = 0;
     this.onGround = true;
     this.airTime = 0;
-    this.energy = 100;
-    this.nitro = 40;
+    this.air = 100;
+    this.compressorWait = 0;
     this.padBoost = 0;
+    this.boosting = false;
+    this.launchT = 0;
+    this.hoverBurn = 0;
+    this.hopFx = 0;
+    this.grip = 0;
+    this.cushioned = false;
+    this.puffLeft = 0;
+    this.resetThrusters();
+    this.thrusterMode = null;
     this.roll = 0;
     this.rolling = false;
     this.tricks = 0;
@@ -284,6 +341,8 @@ export class Game {
     this.world.reset();
     this.exhaust.reset();
     this.smoke.reset();
+    this.vapour.reset();
+    this.fog.reset();
     this.car.setVisible(true);
   }
 
@@ -374,8 +433,8 @@ export class Game {
     this.events.onStats({
       score: Math.floor(this.score),
       timeLeft: Math.max(0, this.timeLeft),
-      energy: this.energy / 100,
-      nitro: this.nitro / 100,
+      air: this.air / 100,
+      thruster: this.thrusterMode,
       speed: Math.hypot(this.vel.x, this.vel.z),
       combo: this.combo,
       comboTimer: this.combo > 1 ? Math.max(0, this.comboTimer) : 0,
@@ -421,8 +480,11 @@ export class Game {
     this.look = this.env.update(this.pos.z, this.pos, this.camera, this.clock);
     this.world.update(dt, this.clock, this.pos.z, this.look, this.scene.fog as THREE.Fog, dt > 0 && this.mode !== 'showroom');
     this.updateCarVisual(dt);
+    this.emitVapour(dt);
     this.exhaust.update(dt);
     this.smoke.update(dt);
+    this.vapour.update(dt);
+    this.fog.update(dt);
     this.updateCamera(dt);
 
     const speed01 = Math.min(1, Math.hypot(this.vel.x, this.vel.z) / BOOST_SPEED);
@@ -514,6 +576,8 @@ export class Game {
     }
     this.invuln = Math.max(0, this.invuln - dt);
 
+    this.resetThrusters();
+    this.landingAssist = false;
     if (!this.rail) this.tryEnterRail();
     if (this.rail) this.rideRail(dt, inp);
     else {
@@ -521,13 +585,16 @@ export class Game {
       this.drive(dt, inp);
     }
     this.collide(dt);
+    this.updateAttitudePuffs(dt);
+    this.updateCompressor(dt);
     this.updateCarPose(dt, inp, true);
     this.emitFx(dt);
 
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.bd.topSpeed = Math.max(this.bd.topSpeed, speed);
     this.score += Math.max(0, this.vel.z) * dt * 0.6;
-    updateLoops(speed / BOOST_SPEED, this.thrusting ? 1 : 0, this.boosting ? 1 : 0, !this.onGround);
+    const t = this.thr;
+    updateLoops(speed / BOOST_SPEED, Math.max(t.down, t.front, this.grip * 0.4, Math.max(t.sidePos, t.sideNeg) * 0.35), t.rear, !this.onGround);
 
     const st = Math.min(2, Math.floor(this.pos.z / 500));
     if (st !== this.stage && st > this.stage) {
@@ -537,7 +604,8 @@ export class Game {
     // contextual first-run hints
     if (this.pos.z > 60) this.hint('fly');
     if (this.pos.z > 115 && this.pos.z < 150) this.hint('ramp');
-    if (this.pos.z > 240) this.hint('nitro');
+    if (this.pos.z > 240) this.hint('boost');
+    if (this.pos.z > 420) this.hint('grip');
     if (this.pos.z > 330 && !this.onGround && !this.stuntAir) this.hint('roll');
     if (this.pos.z > 545) this.hint('barrier');
     if (this.pos.z > 1030) this.hint('gantry');
@@ -577,14 +645,17 @@ export class Game {
     this.brake = false;
     this.steer += (0 - this.steer) * Math.min(1, dt * 8);
     this.padBoost = Math.max(0, this.padBoost - dt);
-    const wantsNitro = inp.boost && this.nitro > 0;
-    this.boosting = this.padBoost > 0 || wantsNitro;
-    if (wantsNitro && this.padBoost <= 0) this.nitro = Math.max(0, this.nitro - NITRO_DRAIN * dt);
-    this.thrusting = false;
+    this.boostWas = inp.boost;
+    const mains = inp.boost && this.air > 0;
+    if (mains) {
+      this.air = Math.max(0, this.air - REAR_DRAIN * dt);
+      this.thr.rear = 1;
+    }
+    this.boosting = this.padBoost > 0 || mains;
+    this.grip += (0 - this.grip) * Math.min(1, dt * 4);
     const target = this.boosting ? RAIL_BOOST_SPEED : RAIL_SPEED;
     this.railSpeed += (target - this.railSpeed) * Math.min(1, dt * 1.5);
     this.railBlend = Math.min(1, this.railBlend + dt * 5);
-    this.energy = Math.min(100, this.energy + ENERGY_REFILL * 2 * dt);
 
     const z = Math.min(this.pos.z + this.railSpeed * dt, s.z1);
     stuntPose(s, z, this.pose);
@@ -603,8 +674,8 @@ export class Game {
       this.airTime = 0;
       this.tricks = 0;
       this.vel.set(0, this.pose.slope * this.railSpeed + 2, this.railSpeed);
-      this.energy = 100;
-      this.nitro = Math.min(100, this.nitro + 15);
+      this.air = 100;
+      this.hoverBurn = 0;
       this.shake = Math.max(this.shake, 0.35);
       this.flash = Math.max(this.flash, 0.3);
       sfx.hop();
@@ -628,7 +699,8 @@ export class Game {
         this.tricks++;
         this.bd.tricks++;
         this.addCombo();
-        this.nitro = Math.min(100, this.nitro + 20);
+        this.addAir(15);
+        this.puff(inp.roll, 1, 0.3);
         this.events.onPopup('KICKFLIP', 0, 'gold');
         this.events.onHint(null);
         this.activeHint = null;
@@ -638,6 +710,7 @@ export class Game {
         this.flipTo = 0;
         this.flipDur = 0.7;
         this.flipT = 0;
+        this.puff(this.stuntRoll > 0 ? 1 : -1, 0.8, 0.25);
       }
     }
     if (this.flipT >= 0) {
@@ -693,39 +766,71 @@ export class Game {
     let fwd = this.vel.x * fx + this.vel.z * fz;
     let lat = this.vel.x * rx + this.vel.z * rz;
 
-    // nitro / pads
+    // ---- rear mains behind the drop-down plate: a launch kick from low speed, then boost ----
     this.padBoost = Math.max(0, this.padBoost - dt);
-    const wantsNitro = inp.boost && this.nitro > 0;
-    this.boosting = this.padBoost > 0 || wantsNitro;
-    if (wantsNitro && this.padBoost <= 0) this.nitro = Math.max(0, this.nitro - NITRO_DRAIN * dt);
+    const boostEdge = inp.boost && !this.boostWas;
+    this.boostWas = inp.boost;
+    if (boostEdge && this.onGround && fwd < 22 && this.air > LAUNCH_COST + 4) {
+      this.launchT = LAUNCH_TIME;
+      this.air -= LAUNCH_COST;
+      this.events.onPopup('THRUSTER LAUNCH', 0, 'gold');
+      this.shake = Math.max(this.shake, 0.3);
+      sfx.boost();
+    }
+    this.launchT = Math.max(0, this.launchT - dt);
+    const mains = this.launchT > 0 || (inp.boost && this.air > 0);
+    if (mains) {
+      if (this.launchT <= 0) this.air = Math.max(0, this.air - REAR_DRAIN * dt);
+      this.thr.rear = 1;
+    }
+    this.boosting = this.padBoost > 0 || mains;
     const top = this.boosting ? BOOST_SPEED : MAX_SPEED;
+
+    // ---- downforce: in hard corners at speed the side pods fire upward ----
+    const wantsGrip = this.onGround && Math.abs(this.steer) > 0.45 && Math.abs(fwd) > 22 && this.air > 3;
+    this.grip += ((wantsGrip ? 1 : 0) - this.grip) * Math.min(1, dt * (wantsGrip ? 8 : 4));
+    if (wantsGrip) this.air = Math.max(0, this.air - GRIP_DRAIN * dt);
+
+    // ---- front thrusters fire ahead under braking ----
+    const thrusterBrake = inp.throttle < 0 && fwd > 3 && this.air > 0;
+    if (thrusterBrake) {
+      this.air = Math.max(0, this.air - FRONT_DRAIN * dt);
+      this.thr.front = 1;
+    }
 
     const offroad = Math.abs(this.pos.x) > ROAD_HALF_WIDTH + 1;
     if (this.onGround) {
+      this.hoverBurn = 0;
       if (inp.throttle > 0) {
         const a = (this.boosting ? BOOST_ACCEL : ACCEL) * inp.throttle;
         fwd += a * Math.max(0, 1 - Math.pow(Math.max(0, fwd) / top, 2)) * dt;
       } else if (inp.throttle < 0) {
-        fwd += fwd > 1 ? -44 * dt : -14 * dt;
+        if (fwd > 1) fwd = Math.max(0, fwd - (thrusterBrake ? 92 : 44) * dt);
+        else fwd -= 14 * dt;
       } else {
         fwd -= Math.sign(fwd) * Math.min(Math.abs(fwd), (2 + Math.abs(fwd) * 0.12) * dt);
       }
       if (this.boosting && inp.throttle >= 0) fwd += (BOOST_ACCEL * 0.5) * Math.max(0, 1 - fwd / top) * dt;
+      // the launch out-pushes the tyres: thrust beyond grip
+      if (this.launchT > 0) fwd += LAUNCH_ACCEL * dt;
       if (offroad) fwd -= fwd * 0.5 * dt;
       if (fwd > top) fwd += (top - fwd) * Math.min(1, dt * 1.5);
       fwd = Math.max(-12, fwd);
-      lat *= Math.exp(-(this.boosting ? 6 : 9) * dt);
+      lat *= Math.exp(-((this.boosting ? 6 : 9) + this.grip * 10) * dt);
     } else {
       if (inp.throttle > 0) fwd += 6 * dt * Math.max(0, 1 - fwd / top);
       if (this.boosting) fwd += BOOST_ACCEL * 0.7 * Math.max(0, 1 - fwd / top) * dt;
+      if (thrusterBrake) fwd -= 22 * dt;
       fwd -= fwd * 0.03 * dt;
       if (fwd > top) fwd += (top - fwd) * 0.5 * dt;
+      // lateral thrusters translate the car sideways in the air
+      if (this.air > 0) lat += this.steer * AIR_STRAFE * dt;
       lat *= Math.exp(-2.5 * dt);
     }
 
-    // steering: responsive at low speed, calmer at top speed
+    // steering: responsive at low speed, calmer at top speed; downforce tightens the line
     const speedAbs = Math.abs(fwd);
-    const turn = 1.6 * Math.min(1, speedAbs / 8) / (1 + speedAbs / 70);
+    const turn = (1.6 * Math.min(1, speedAbs / 8) / (1 + speedAbs / 70)) * (1 + this.grip * 0.4);
     const yawRate = -this.steer * turn * (fwd < -0.5 ? -1 : 1) * (this.onGround ? 1 : 0.75);
     this.heading += yawRate * dt;
     // the course runs along +Z: keep the nose within a sane cone and gently re-centre in the air
@@ -738,26 +843,47 @@ export class Game {
     this.vel.x = nfx * fwd + -nfz * lat;
     this.vel.z = nfz * fwd + nfx * lat;
 
-    // ---- thrusters ----
-    this.thrusting = false;
+    // ---- down thrusters: a hop, then a short hover while held (not sustained flight) ----
     const ground = this.world.groundHeight(this.pos.x, this.pos.z);
     const alt = this.pos.y - ground;
-    if (inp.thrustPressed && this.onGround && this.energy > HOP_COST) {
-      this.energy -= HOP_COST;
+    if (inp.thrustPressed && this.onGround && this.air > HOP_COST) {
+      this.air -= HOP_COST;
       this.vel.y = Math.max(this.vel.y, HOP_VY);
       this.onGround = false;
       this.airTime = 0;
       this.tricks = 0;
+      this.hoverBurn = 0;
+      this.cushioned = false;
+      this.hopFx = 0.2;
       sfx.hop();
       this.burstSmoke(14, 3);
       this.shake = Math.max(this.shake, 0.15);
     }
-    if (inp.thrust && !this.onGround && this.energy > 0) {
-      const taper = THREE.MathUtils.clamp((MAX_ALT + 4 - alt) / 8, 0, 1);
-      this.vel.y += THRUST_ACCEL * taper * dt;
-      this.energy = Math.max(0, this.energy - ENERGY_DRAIN * dt);
-      this.thrusting = true;
+    this.hopFx = Math.max(0, this.hopFx - dt);
+    if (this.hopFx > 0) this.thr.down = 1;
+    if (inp.thrust && !this.onGround && this.air > 0 && this.hoverBurn < HOVER_TIME && this.vel.y > -14) {
+      this.hoverBurn += dt;
+      // the burst sputters out at the end; lift tapers off near the ceiling so the car settles into a hover
+      const fade = THREE.MathUtils.clamp((HOVER_TIME - this.hoverBurn) / 0.35, 0, 1);
+      const taper = THREE.MathUtils.clamp((HOVER_CEIL - alt) / 3, 0, 1);
+      this.vel.y += HOVER_ACCEL * taper * fade * dt;
+      this.vel.y -= this.vel.y * 1.5 * fade * dt;
+      this.air = Math.max(0, this.air - HOVER_DRAIN * dt);
+      this.thr.down = Math.max(this.thr.down, 0.35 + 0.65 * fade);
     }
+
+    // ---- landing assist: down thrusters cushion a fast descent if the car is upright ----
+    if (!this.onGround && this.vel.y < -8 && !this.rolling && this.air > 2 && Math.abs(wrapAngle(this.stuntRoll)) < 0.5) {
+      const reach = 1.5 - this.vel.y * 0.12;
+      if (alt < reach && alt > 0.05) {
+        this.vel.y += CUSHION_ACCEL * dt;
+        this.air = Math.max(0, this.air - CUSHION_DRAIN * dt);
+        this.thr.down = 1;
+        this.landingAssist = true;
+        this.cushioned = true;
+      }
+    }
+
     if (!this.onGround) {
       this.vel.y += GRAVITY * dt;
       // wing-body lift makes descents floaty at speed
@@ -765,15 +891,14 @@ export class Game {
       this.vel.y -= this.vel.y * 0.25 * dt;
       this.airTime += dt;
       this.bd.airtime += dt;
-    } else {
-      this.energy = Math.min(100, this.energy + ENERGY_REFILL * dt);
     }
 
-    // ---- barrel rolls ----
+    // ---- barrel rolls (side thrusters fire to start the spin) ----
     if (inp.roll !== 0 && !this.onGround && !this.rolling && alt > 1.5 && this.flipT < 0 && this.stuntRoll === 0) {
       this.rolling = true;
       this.rollDir = inp.roll;
       this.roll = 0;
+      this.puff(inp.roll, 1, 0.22);
       sfx.roll();
     }
     if (this.rolling) {
@@ -783,13 +908,76 @@ export class Game {
         this.roll = 0;
         this.tricks++;
         this.bd.tricks++;
-        this.nitro = Math.min(100, this.nitro + 12);
+        this.addAir(10);
+        this.puff(-this.rollDir, 0.9, 0.12);
         this.addCombo();
         this.events.onPopup('BARREL ROLL', 0, 'gold');
       }
     }
 
     this.pos.addScaledVector(this.vel, dt);
+  }
+
+  // ---------------- thrusters ----------------
+
+  private resetThrusters() {
+    this.thr.rear = this.thr.front = this.thr.down = this.thr.sidePos = this.thr.sideNeg = 0;
+  }
+
+  private addAir(n: number) {
+    this.air = Math.min(100, this.air + n);
+  }
+
+  /** Fire one lateral pod for a short pulse. side > 0 is the pod on the car's +X flank. */
+  private puff(side: number, power: number, dur = 0.07) {
+    if (this.air <= 0 || side === 0) return;
+    this.puffSide = side;
+    this.puffPower = power;
+    this.puffLeft = dur;
+    this.air = Math.max(0, this.air - PUFF_COST * power);
+  }
+
+  /** Attitude control in the air: pulses while steering, plus small levelling blips. */
+  private updateAttitudePuffs(dt: number) {
+    this.puffGap -= dt;
+    if (!this.onGround && !this.rail && this.puffLeft <= 0 && this.puffGap <= 0) {
+      if (Math.abs(this.steer) > 0.15) {
+        // the +X pod blows outward and pushes the car toward -X (screen-right)
+        this.puff(this.steer > 0 ? 1 : -1, 1);
+        this.puffGap = 0.15;
+      } else {
+        this.puff(Math.random() < 0.5 ? 1 : -1, 0.45, 0.05);
+        this.puffGap = 0.45 + Math.random() * 0.5;
+      }
+    }
+    if (this.puffLeft > 0) {
+      this.puffLeft -= dt;
+      if (this.puffSide > 0) this.thr.sidePos = this.puffPower;
+      else this.thr.sideNeg = this.puffPower;
+    }
+    const t = this.thr;
+    this.thrusterMode =
+      this.launchT > 0
+        ? 'LAUNCH'
+        : this.landingAssist
+          ? 'LANDING'
+          : t.front > 0
+            ? 'BRAKE'
+            : t.rear > 0
+              ? 'BOOST'
+              : t.down > 0.3 && !this.onGround
+                ? 'HOVER'
+                : this.grip > 0.5
+                  ? 'GRIP'
+                  : null;
+  }
+
+  /** The onboard compressor tops the COPVs up whenever the big thrusters rest. */
+  private updateCompressor(dt: number) {
+    const t = this.thr;
+    const firing = t.rear > 0 || t.front > 0 || t.down > 0 || this.grip > 0.3;
+    if (firing) this.compressorWait = COMPRESSOR_DELAY;
+    else if ((this.compressorWait -= dt) <= 0) this.addAir(AIR_REFILL * dt * (this.onGround || this.rail ? 1 : 0.6));
   }
 
   private collide(dt: number) {
@@ -804,7 +992,8 @@ export class Game {
       this.pos.y = g;
       if (!this.onGround) this.land(impact);
       const slope = (this.world.groundHeight(this.pos.x, this.pos.z + 0.5) - this.world.groundHeight(this.pos.x, this.pos.z - 0.5)) / 1;
-      this.vel.y = slope * this.vel.z;
+      // the slope sample straddles ramp lips, where it is close to vertical; never fling the car down off one
+      this.vel.y = Math.max(-8, slope * this.vel.z);
       this.onGround = true;
     } else if (this.onGround) {
       // ran off a ramp lip or a ledge
@@ -870,7 +1059,7 @@ export class Game {
         this.onGround = false;
         const pts = 250 * this.combo;
         this.score += pts;
-        this.nitro = Math.min(100, this.nitro + 10);
+        this.addAir(6);
         this.addCombo();
         this.events.onPopup('ROOF HOP', pts, 'gold');
         sfx.hop();
@@ -896,7 +1085,7 @@ export class Game {
           this.onGround = false;
           this.airTime = 0.3;
           this.score += 250 * this.combo;
-          this.nitro = Math.min(100, this.nitro + 10);
+          this.addAir(6);
           this.addCombo();
           this.events.onPopup('ROOF HOP', 250 * this.combo, 'gold');
           sfx.hop();
@@ -915,7 +1104,7 @@ export class Game {
           const pts = 120 * this.combo;
           this.score += pts;
           this.bd.nearMisses++;
-          this.nitro = Math.min(100, this.nitro + 9);
+          this.addAir(5);
           this.addCombo();
           this.events.onPopup(vgap > 0 ? 'SKIM' : 'NEAR MISS', pts, 'good');
           sfx.whoosh();
@@ -936,8 +1125,7 @@ export class Game {
           this.score += pts;
           this.bd.rings++;
           this.timeLeft += 0.5;
-          this.energy = Math.min(100, this.energy + 14);
-          this.nitro = Math.min(100, this.nitro + 8);
+          this.addAir(12);
           this.events.onPopup('RING', pts, 'good');
           sfx.ring(this.combo);
           this.exhaust.emit({ count: 40, pos: r.pos, spread: r.radius * 1.4, velSpread: 10, life: 0.6, size: 0.5, grow: -0.5, color: 0x6fe4ff, drag: 2 });
@@ -979,6 +1167,9 @@ export class Game {
   private land(impact: number) {
     const air = this.airTime;
     this.airTime = 0;
+    this.hoverBurn = 0;
+    const cushioned = this.cushioned;
+    this.cushioned = false;
     let stunt = false;
     if (this.stuntAir) {
       if (!this.finishStunt()) return;
@@ -999,12 +1190,13 @@ export class Game {
       const pts = Math.round((50 + Math.min(air, 4) * 80 + trickPts) * this.combo);
       this.score += pts;
       this.addCombo();
-      this.nitro = Math.min(100, this.nitro + 8);
-      this.events.onPopup(this.tricks > 0 ? `TRICK LANDING ×${this.tricks}` : air > 2 ? `BIG AIR ${air.toFixed(1)}s` : 'SMOOTH LANDING', pts, this.tricks ? 'gold' : 'good');
+      this.addAir(6);
+      const label = this.tricks > 0 ? `TRICK LANDING ×${this.tricks}` : cushioned ? 'THRUSTER LANDING' : air > 2 ? `BIG AIR ${air.toFixed(1)}s` : 'SMOOTH LANDING';
+      this.events.onPopup(label, pts, this.tricks ? 'gold' : 'good');
       sfx.cleanLanding();
     }
     sfx.land();
-    this.burstSmoke(10 + Math.min(20, impact), 2 + impact * 0.1);
+    this.burstSmoke(cushioned ? 6 : 10 + Math.min(20, impact), 2 + impact * 0.1);
     this.shake = Math.max(this.shake, Math.min(0.4, impact * 0.02));
     this.tricks = 0;
   }
@@ -1072,17 +1264,25 @@ export class Game {
     const targetRoll = this.steer * (this.onGround ? 0.06 : 0.3) * Math.min(1, Math.abs(fwd) / 20);
     this.bodyPitch += (targetPitch - this.bodyPitch) * Math.min(1, dt * 6);
     this.bodyRoll += (targetRoll - this.bodyRoll) * Math.min(1, dt * 6);
-    const hoverTarget = this.onGround ? 0 : 1;
-    this.hover += (hoverTarget - this.hover) * Math.min(1, dt * (this.onGround ? 14 : 6));
   }
 
   private updateCarVisual(dt: number) {
     const r = this.car.root;
     const showroom = this.mode === 'showroom';
+    let state = this.thr;
     if (showroom) {
-      r.position.set(0, 0.55 + Math.sin(this.clock * 1.6) * 0.08, 0);
+      // hovering on the down thrusters for the title screen, with an occasional attitude blip
+      r.position.set(0, 1.6 + Math.sin(this.clock * 1.6) * 0.1, 0);
       r.rotation.set(0, this.clock * 0.25, 0);
       this.car.body.rotation.set(Math.sin(this.clock * 1.1) * 0.02, 0, Math.sin(this.clock * 0.8) * 0.03);
+      const blip = (phase: number) => (((this.clock * 0.55 + phase) % 1) < 0.05 ? 0.7 : 0);
+      state = {
+        rear: 0,
+        front: 0,
+        down: 0.8 + Math.sin(this.clock * 1.6 + 1.2) * 0.12,
+        sidePos: blip(0),
+        sideNeg: blip(0.5),
+      };
     } else {
       r.position.copy(this.pos);
       r.rotation.set(0, this.heading, 0);
@@ -1090,59 +1290,125 @@ export class Game {
       this.car.body.rotation.set(this.bodyPitch, 0, -this.bodyRoll + trick + this.stuntRoll, 'YXZ');
       this.car.body.position.y = this.onGround ? Math.sin(this.clock * 30) * 0.004 * Math.min(1, Math.abs(this.vel.z) / 20) : 0;
     }
+    const live = this.mode === 'race' || showroom;
     this.car.setVisible(this.invuln <= 0 || Math.floor(this.invuln * 14) % 2 === 0);
-    const speed = showroom ? 0 : this.vel.z;
-    this.car.update(dt, {
-      speed,
-      steer: showroom ? 0 : this.steer,
-      hover: showroom ? 1 : this.hover,
-      thrust: showroom ? 0.25 + Math.sin(this.clock * 2) * 0.1 : this.thrusting ? 1 : 0,
-      boost: showroom ? 0 : this.boosting ? 1 : 0,
-      brake: this.brake && this.mode === 'race',
-      night: this.look.night,
-    }, showroom ? 0 : this.world.groundHeight(this.pos.x, this.pos.z));
+    this.car.update(
+      dt,
+      {
+        speed: showroom ? 0 : this.vel.z,
+        steer: showroom ? 0 : this.steer,
+        rear: live ? state.rear : 0,
+        front: live ? state.front : 0,
+        down: live ? state.down : 0,
+        sidePos: live ? state.sidePos : 0,
+        sideNeg: live ? state.sideNeg : 0,
+        grip: showroom ? 0 : this.grip,
+        brake: this.brake && this.mode === 'race',
+        night: this.look.night,
+      },
+      showroom ? 0 : this.world.groundHeight(this.pos.x, this.pos.z)
+    );
   }
 
   private emitFx(dt: number) {
-    const fx = Math.sin(this.heading);
-    const fz = Math.cos(this.heading);
-    if (this.boosting || this.thrusting) {
-      const n = this.boosting ? 3 : 1;
-      for (const side of [-0.48, 0.48]) {
-        this.tmp.set(this.pos.x - fz * side - fx * 2.6, this.pos.y + 0.52, this.pos.z + fx * side - fz * 2.6);
-        this.exhaust.emit({
-          count: n,
-          pos: this.tmp,
-          spread: 0.15,
-          vel: this.tmp2.set(this.vel.x * 0.6 - fx * 12, this.vel.y * 0.6, this.vel.z * 0.6 - fz * 12),
-          velSpread: 2,
-          life: 0.28,
-          size: 0.55,
-          grow: -0.6,
-          color: this.boosting ? 0x8fd4ff : 0x5aa8ff,
-          drag: 3,
-        });
-      }
-    }
-    if (this.thrusting && Math.random() < dt * 60) {
-      const alt = this.pos.y - this.world.groundHeight(this.pos.x, this.pos.z);
-      this.exhaust.emit({
-        count: 2,
-        pos: this.tmp.set(this.pos.x, this.pos.y + 0.1, this.pos.z),
-        spread: 2.2,
-        vel: this.tmp2.set(this.vel.x * 0.8, -9, this.vel.z * 0.8),
-        velSpread: 2,
-        life: 0.25,
-        size: 0.7,
-        grow: 1,
-        color: 0x9fdcff,
-        alpha: 0.7,
-        drag: 2,
-      });
-      if (alt < 7 && Math.random() < 0.5) this.burstSmoke(2, 2.5, true);
-    }
     const speed = Math.abs(this.vel.z);
     if (this.onGround && Math.abs(this.pos.x) > ROAD_HALF_WIDTH + 1 && speed > 10 && Math.random() < dt * 30) this.burstSmoke(1, 1.5);
+  }
+
+  /** White cold-gas vapour from every live nozzle, plus fog and dust where the jets reach the road. */
+  private emitVapour(dt: number) {
+    if (dt <= 0) return;
+    const q = FX_SCALE[this.settings.quality];
+    const showroom = this.mode === 'showroom';
+    const carVel = showroom ? this.tmp3.set(0, 0, 0) : this.tmp3.copy(this.vel);
+    const ground = showroom ? 0 : this.world.groundHeight(this.pos.x, this.pos.z);
+    const stage = Math.min(2, Math.floor(this.pos.z / 500));
+    const dust = stage === 0 ? 0xd2b58e : stage === 1 ? 0xd9dde2 : 0x9a96b0;
+    const P = this.tmp;
+    const D = this.tmp2;
+
+    // the plate drops with a pressure burst before the mains settle into a steady jet
+    const plate = this.car.plateDrop;
+    const burst = plate > 0.5 && this.plateWas <= 0.5;
+    this.plateWas = plate;
+
+    this.car.nozzles.forEach((n, i) => {
+      if (n.power < 0.04 && !(burst && n.group === 'rear')) {
+        this.fxAcc[i] = 0;
+        return;
+      }
+      const cfg = VAPOUR[n.group];
+      this.car.nozzleWorld(n, P, D);
+      this.fxAcc[i] = (this.fxAcc[i] ?? 0) + cfg.rate * n.power * q * dt;
+      const count = Math.floor(this.fxAcc[i]);
+      if (count > 0) {
+        this.fxAcc[i] -= count;
+        this.vapour.emit({
+          count,
+          pos: this.tmp4.copy(P).addScaledVector(D, 0.15),
+          spread: 0.08,
+          vel: this.tmp5.copy(carVel).multiplyScalar(0.9).addScaledVector(D, cfg.speed * (0.7 + 0.3 * n.power)),
+          velSpread: cfg.speed * 0.2,
+          life: cfg.life,
+          size: cfg.size,
+          grow: 6,
+          color: 0xf4f7fb,
+          alpha: (n.group === 'rear' ? 0.3 : 0.42) * Math.min(1, n.power + 0.2),
+          drag: 4.5,
+          gravity: 0.5,
+          fadeIn: 0.12,
+        });
+      }
+      if (burst && n.group === 'rear') {
+        this.vapour.emit({
+          count: Math.ceil(12 * q),
+          pos: P,
+          spread: 0.2,
+          vel: this.tmp5.copy(carVel).multiplyScalar(0.9).addScaledVector(D, 14),
+          velSpread: 9,
+          life: 0.5,
+          size: 0.35,
+          grow: 5,
+          color: 0xffffff,
+          alpha: 0.32,
+          drag: 3,
+          gravity: 0.6,
+          fadeIn: 0.05,
+        });
+      }
+
+      // ground effect: jets that reach the road fan out into a low fog sheet and kick up dust
+      if (!cfg.reach) return;
+      const h = P.y - ground;
+      if (h > cfg.reach || h < -0.5) return;
+      const k = THREE.MathUtils.clamp(1 - h / cfg.reach, 0, 1) * Math.max(n.power, burst ? 1 : 0);
+      this.fogAcc[i] = (this.fogAcc[i] ?? 0) + cfg.fog * k * q * dt + (burst ? 5 * q : 0);
+      let fogCount = Math.floor(this.fogAcc[i]);
+      this.fogAcc[i] -= fogCount;
+      const hit = this.tmp4.copy(P);
+      if (n.group !== 'down') hit.addScaledVector(D, 1.4);
+      hit.y = ground + 0.1;
+      while (fogCount-- > 0) {
+        const a = Math.random() * Math.PI * 2;
+        const out = 5 + 7 * k;
+        const isDust = Math.random() < 0.3;
+        this.fog.emit({
+          count: 1,
+          pos: hit,
+          spread: 0.4,
+          vel: this.tmp5.set(Math.cos(a) * out + carVel.x * 0.5 + D.x * 4, isDust ? 1.4 : 0.2, Math.sin(a) * out + carVel.z * 0.5 + D.z * 4),
+          velSpread: 2,
+          life: isDust ? 1.1 : 1.9,
+          size: isDust ? 0.7 : 1.0,
+          grow: isDust ? 2 : 2.8,
+          color: isDust ? dust : 0xeef1f5,
+          alpha: (isDust ? 0.24 : 0.36) * (0.5 + 0.5 * k),
+          drag: 1.4,
+          gravity: isDust ? -1.2 : 0.1,
+          fadeIn: 0.15,
+        });
+      }
+    });
   }
 
   private burstSmoke(count: number, spread: number, under = false) {
@@ -1183,7 +1449,6 @@ export class Game {
       this.vel.y = 0;
       this.onGround = true;
     }
-    this.hover += ((this.onGround ? 0 : 1) - this.hover) * Math.min(1, dt * 6);
   }
 
   private updateCamera(dt: number) {
@@ -1196,7 +1461,7 @@ export class Game {
       cam.position.copy(this.camPos);
       // place the car right-of-centre on wide screens so the menu can sit on the left
       const right = this.tmp.set(Math.cos(a), 0, -Math.sin(a));
-      this.camLook.set(0, wide ? 0.9 : 1.6, 0).addScaledVector(right, wide ? -2.6 : 0);
+      this.camLook.set(0, wide ? 1.7 : 2.3, 0).addScaledVector(right, wide ? -2.6 : 0);
       cam.lookAt(this.camLook);
       this.setFov(wide ? 42 : 48, dt);
       return;

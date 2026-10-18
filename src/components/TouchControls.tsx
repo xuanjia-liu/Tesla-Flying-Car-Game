@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { ChevronsUp, RotateCw, Zap } from 'lucide-react';
+import { ChevronsDown, ChevronsUp, RotateCw } from 'lucide-react';
 import type { InputManager, TouchState } from '@/game/input';
 
 interface Props {
@@ -107,20 +107,20 @@ export default function TouchControls({ input }: Props) {
         </div>
         <div className="flex flex-col items-center gap-3">
           <button
-            aria-label="Nitro"
+            aria-label="Boost"
             className={`${ring} h-16 w-16 border-fuchsia-300/50 bg-fuchsia-500/15 text-fuchsia-100 ${boost.down ? 'scale-90 bg-fuchsia-500/40' : ''}`}
             {...boost.handlers}
           >
-            <Zap className="h-6 w-6" />
-            <span className="text-[8px] font-bold tracking-widest">NITRO</span>
+            <ChevronsDown className="h-6 w-6 -rotate-90" />
+            <span className="text-[8px] font-bold tracking-widest">BOOST</span>
           </button>
           <button
-            aria-label="Thrust"
+            aria-label="Hop and hover"
             className={`${ring} h-24 w-24 border-cyan-200/60 bg-cyan-400/15 text-cyan-50 shadow-[0_0_30px_rgba(56,216,255,.25)] ${thrust.down ? 'scale-90 bg-cyan-400/40' : ''}`}
             {...thrust.handlers}
           >
             <ChevronsUp className="h-8 w-8" />
-            <span className="text-[9px] font-bold tracking-widest">THRUST</span>
+            <span className="text-[9px] font-bold tracking-widest">HOP</span>
           </button>
         </div>
       </div>

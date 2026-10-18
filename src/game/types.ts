@@ -10,8 +10,8 @@ export const STAGE_NAMES = ['MOJAVE DAWN', 'COASTAL CAUSEWAY', 'NEON DISTRICT'] 
 export interface GameStats {
   score: number;
   timeLeft: number;
-  energy: number; // 0..1
-  nitro: number; // 0..1
+  air: number; // 0..1 COPV pressure, refilled by the onboard compressor
+  thruster: ThrusterMode | null; // the cold-gas function firing right now
   speed: number; // m/s
   combo: number;
   comboTimer: number; // 0..1 until the combo drops
@@ -23,6 +23,8 @@ export interface GameStats {
   stage: number;
   boosting: boolean;
 }
+
+export type ThrusterMode = 'LAUNCH' | 'BOOST' | 'BRAKE' | 'GRIP' | 'HOVER' | 'LANDING';
 
 export interface RunBreakdown {
   crashes: number;
@@ -60,7 +62,7 @@ export interface GameEvents {
   onHint: (hint: HintId | null) => void;
 }
 
-export type HintId = 'drive' | 'fly' | 'nitro' | 'roll' | 'ramp' | 'barrier' | 'gantry' | 'stunt' | 'kickflip';
+export type HintId = 'drive' | 'fly' | 'boost' | 'grip' | 'roll' | 'ramp' | 'barrier' | 'gantry' | 'stunt' | 'kickflip';
 
 export const PAINTS = [
   { id: 'silver', name: 'Quicksilver', hex: 0xd9dce2 },
