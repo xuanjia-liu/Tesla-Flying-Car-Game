@@ -1,16 +1,17 @@
 import * as THREE from 'three';
 import { loadAssets } from './assets';
 import { CarRig, type ThrusterGroup } from './car';
-import { Environment, lookAt, type StageLook } from './environment';
+import { Environment, LOOKS, type StageLook } from './environment';
 import type { InputManager, InputState } from './input';
 import { ParticlePool } from './particles';
 import { PostFX } from './postfx';
 import type { Settings } from './settings';
 import { sfx, startLoops, stopLoops, updateLoops, startMusic, setMusicIntensity, setVolumes } from './audio';
 import { stuntPose, type Stunt, type StuntPose } from './stunts';
-import { World, type TrafficCar } from './world';
+import { World, type Ring, type TrafficCar } from './world';
+import { sampleTrack, type TrackFrame } from './track';
+import { MISSIONS } from './missions';
 import {
-  COURSE_LENGTH,
   GameEvents,
   GameStats,
   HintId,
@@ -20,6 +21,7 @@ import {
   RunBreakdown,
   ThrusterMode,
   gradeFor,
+  gradeForTime,
 } from './types';
 
 const SIM_DT = 1 / 120;
@@ -151,6 +153,31 @@ export class Game {
   private stuntCam = 0;
   private railCam = 0;
   private camRoll = 0;
+  private fovKick = 0;
+  private lowG = 1;
+  private onRibbon = false;
+  private ribbonS = 0;
+  private ribbonU = 0;
+  private ribbonVs = 0;
+  private ribbonVu = 0;
+  private ribbonVh = 0;
+  private ribbonAttached = false;
+  private ribbonFrame: TrackFrame | null = null;
+  private trackQuat = new THREE.Quaternion();
+  private basis = new THREE.Matrix4();
+  private spawnS = 0;
+  private spawnPos = new THREE.Vector3();
+  private spawnHeading = 0;
+  private queueRestart = false;
+  private ghost = new THREE.Mesh(
+    new THREE.BoxGeometry(1.9, 0.8, 4.4),
+    new THREE.MeshBasicMaterial({ color: 0xe7fbff, transparent: true, opacity: 0.38, depthWrite: false })
+  );
+  private ghostTimes: number[] = [];
+  private ghostPos: THREE.Vector3[] = [];
+  private ghostQuat: THREE.Quaternion[] = [];
+  private recordT = 0;
+  private recorded: { t: number; p: THREE.Vector3; q: THREE.Quaternion }[] = [];
 
   // run state
   private timeLeft = START_TIME;
@@ -198,9 +225,11 @@ export class Game {
 
     this.camera = new THREE.PerspectiveCamera(this.fov, 1, 0.3, 5000);
     this.env = new Environment(this.renderer, this.scene);
-    this.look = lookAt(0).look;
+    this.look = LOOKS[0];
     this.postfx = new PostFX(this.renderer, this.scene, this.camera, 1, 1);
     this.scene.add(this.exhaust.points, this.smoke.points, this.vapour.points, this.fog.points);
+    this.ghost.visible = false;
+    this.scene.add(this.ghost);
 
     const onResize = () => this.resize();
     window.addEventListener('resize', onResize);
@@ -250,6 +279,10 @@ export class Game {
           rail: !!this.rail,
           stuntAir: !!this.stuntAir,
           stuntRoll: this.stuntRoll,
+          mission: this.world.mission,
+          ribbonS: this.ribbonS,
+          onRibbon: this.onRibbon,
+          y: this.pos.y,
         }),
         rings: () => this.world.rings.filter((r) => !r.passed).slice(0, 3).map((r) => r.pos.toArray()),
         obstacles: () => this.world.obstacles.map((o) => [o.box.min.toArray(), o.box.max.toArray()]),
@@ -322,8 +355,11 @@ export class Game {
     this.rolling = false;
     this.tricks = 0;
     this.invuln = 0;
-    this.timeLeft = START_TIME;
+    this.timeLeft = MISSIONS[this.world.mission]?.attack ? 0 : MISSIONS[this.world.mission]?.time || START_TIME;
     this.runTime = 0;
+    this.onRibbon = false;
+    this.ribbonAttached = false;
+    this.lowG = 1;
     this.score = 0;
     this.combo = 1;
     this.comboTimer = 0;
@@ -346,25 +382,37 @@ export class Game {
     this.car.setVisible(true);
   }
 
-  startRun() {
+  startRun(mission = 0, quick = false) {
     if (!this.ready) return;
+    if (this.world.mission !== mission) this.world.load(mission);
     this.resetRun();
+    this.recorded = [];
+    this.recordT = 0;
+    this.loadGhost(mission);
     const warp = Number(new URLSearchParams(location.search).get('z'));
-    if (warp > 0) {
-      this.pos.z = Math.min(warp, COURSE_LENGTH - 20);
-      this.stage = Math.min(2, Math.floor(this.pos.z / 500));
+    if (this.world.trackFrames) {
+      this.seatOnTrack(Math.min(Math.max(warp, 2), this.world.trackLength - 5));
+      this.spawnS = this.ribbonS;
+      this.onRibbon = true;
+    } else if (warp > 0) {
+      this.pos.z = Math.min(warp, this.world.courseLength - 20);
       this.camPos.set(0, 3, this.pos.z - 8);
       for (const cp of this.world.checkpoints) cp.passed = cp.z < this.pos.z;
+      this.spawnPos.copy(this.pos);
+    } else {
+      this.spawnPos.set(0, 0, 0);
+      this.spawnHeading = 0;
     }
     this.mode = 'countdown';
-    this.countdown = COUNTDOWN;
+    this.countdown = quick ? 0.45 : this.world.attack ? 1.5 : COUNTDOWN;
     this.paused = false;
     this.hintTimer = 0;
     this.activeHint = null;
+    this.queueRestart = false;
     startLoops();
     startMusic(1);
     setMusicIntensity(1);
-    this.events.onStage(this.stage);
+    this.events.onStage(this.world.mission);
     this.emitStats();
   }
 
@@ -372,8 +420,11 @@ export class Game {
     if (!this.ready) return;
     this.mode = 'showroom';
     this.paused = false;
+    this.onRibbon = false;
+    this.ghost.visible = false;
     stopLoops();
     setMusicIntensity(0);
+    if (this.world.mission !== 0) this.world.load(0);
     this.resetRun();
     this.events.onHint(null);
   }
@@ -402,8 +453,9 @@ export class Game {
     this.mode = 'over';
     stopLoops();
     setMusicIntensity(0);
-    if (finished) {
-      const timeBonus = Math.round(this.timeLeft * 150);
+      if (finished) {
+      this.saveGhost();
+      const timeBonus = this.world.attack ? 0 : Math.round(this.timeLeft * 150);
       this.score += timeBonus + 2500;
       this.events.onCallout('FINISH!', 'gold');
       this.events.onPopup(`TIME BONUS`, timeBonus + 2500, 'gold');
@@ -419,11 +471,13 @@ export class Game {
       () =>
         this.events.onGameOver({
           score,
-          distance: Math.max(0, Math.floor(this.pos.z)),
+          distance: Math.max(0, Math.floor(this.world.trackFrames ? this.ribbonS : this.pos.z)),
           finished,
           runTime: this.runTime,
-          grade: gradeFor(score, finished),
+          grade: this.world.attack ? gradeForTime(this.runTime, MISSIONS[this.world.mission].par, finished) : gradeFor(score, finished),
           breakdown: { ...this.bd, topSpeed: Math.round(this.bd.topSpeed * 2.237), airtime: Math.round(this.bd.airtime * 10) / 10 },
+          attack: this.world.attack,
+          mission: MISSIONS[this.world.mission].name,
         }),
       finished ? 1600 : 1300
     );
@@ -432,19 +486,21 @@ export class Game {
   private emitStats() {
     this.events.onStats({
       score: Math.floor(this.score),
-      timeLeft: Math.max(0, this.timeLeft),
+      timeLeft: this.world.attack ? this.runTime : Math.max(0, this.timeLeft),
       air: this.air / 100,
       thruster: this.thrusterMode,
       speed: Math.hypot(this.vel.x, this.vel.z),
       combo: this.combo,
       comboTimer: this.combo > 1 ? Math.max(0, this.comboTimer) : 0,
-      progress: THREE.MathUtils.clamp(this.pos.z / COURSE_LENGTH, 0, 1),
-      distance: Math.max(0, Math.floor(this.pos.z)),
+      progress: THREE.MathUtils.clamp((this.world.trackFrames ? this.ribbonS : this.pos.z) / Math.max(1, this.world.courseLength), 0, 1),
+      distance: Math.max(0, Math.floor(this.world.trackFrames ? this.ribbonS : this.pos.z)),
       airborne: !this.onGround,
-      altitude: Math.max(0, this.pos.y - this.world.groundHeight(this.pos.x, this.pos.z)),
+      altitude: Math.max(0, this.pos.y - (this.world.support(this.pos.x, this.pos.z, this.pos.y + 2) ?? this.pos.y)),
       countdown: this.mode === 'countdown' ? this.countdown : 0,
-      stage: this.stage,
+      stage: this.world.mission,
       boosting: this.boosting,
+      attack: this.world.attack,
+      mission: MISSIONS[this.world.mission].name,
     } satisfies GameStats);
   }
 
@@ -477,7 +533,10 @@ export class Game {
     if (this.mode === 'showroom') this.updateShowroom(dt);
     if (this.mode === 'over') this.updateCoast(dt);
 
-    this.look = this.env.update(this.pos.z, this.pos, this.camera, this.clock);
+    const lookZ = this.world.mission === 0 ? 80 : this.world.mission === 1 ? 700 : 1200;
+    this.look = this.env.update(lookZ, this.pos, this.camera, this.clock);
+    this.world.playerPos.copy(this.pos);
+    this.world.playerSpeed = Math.hypot(this.vel.x, this.vel.z);
     this.world.update(dt, this.clock, this.pos.z, this.look, this.scene.fog as THREE.Fog, dt > 0 && this.mode !== 'showroom');
     this.updateCarVisual(dt);
     this.emitVapour(dt);
@@ -494,6 +553,14 @@ export class Game {
       this.postfx.render();
     } else {
       this.renderer.render(this.scene, this.camera);
+    }
+
+    if (this.mode === 'race' && this.world.attack) this.recordGhost();
+    this.updateGhost();
+    if (this.queueRestart) {
+      const mission = this.world.mission;
+      this.queueRestart = false;
+      this.startRun(mission, true);
     }
 
     if (this.isRacing) {
@@ -545,6 +612,11 @@ export class Game {
       }
     }
 
+    if (inp.restart) {
+      this.queueRestart = true;
+      return;
+    }
+
     if (this.mode === 'countdown') {
       const before = Math.ceil(this.countdown);
       this.countdown -= dt;
@@ -561,11 +633,13 @@ export class Game {
     }
 
     this.runTime += dt;
-    this.timeLeft -= dt;
-    if (this.timeLeft <= 0) {
-      this.timeLeft = 0;
-      this.endRun(false);
-      return;
+    if (!this.world.attack) {
+      this.timeLeft -= dt;
+      if (this.timeLeft <= 0) {
+        this.timeLeft = 0;
+        this.endRun(false);
+        return;
+      }
     }
     if (this.combo > 1) {
       this.comboTimer -= dt / COMBO_WINDOW;
@@ -578,13 +652,17 @@ export class Game {
 
     this.resetThrusters();
     this.landingAssist = false;
-    if (!this.rail) this.tryEnterRail();
-    if (this.rail) this.rideRail(dt, inp);
-    else {
-      this.updateStuntFlip(dt, inp);
-      this.drive(dt, inp);
+    if (this.onRibbon) {
+      this.driveTrack(dt, inp);
+    } else {
+      if (!this.rail) this.tryEnterRail();
+      if (this.rail) this.rideRail(dt, inp);
+      else {
+        this.updateStuntFlip(dt, inp);
+        this.drive(dt, inp);
+      }
+      this.collide(dt);
     }
-    this.collide(dt);
     this.updateAttitudePuffs(dt);
     this.updateCompressor(dt);
     this.updateCarPose(dt, inp, true);
@@ -592,25 +670,21 @@ export class Game {
 
     const speed = Math.hypot(this.vel.x, this.vel.z);
     this.bd.topSpeed = Math.max(this.bd.topSpeed, speed);
-    this.score += Math.max(0, this.vel.z) * dt * 0.6;
+    this.score += Math.max(0, this.onRibbon ? this.ribbonVs : this.vel.z) * dt * 0.6;
+    for (const z of this.world.zones) {
+      if (!z.shown && this.pos.z > z.z) {
+        z.shown = true;
+        this.events.onCallout(z.text, 'gold');
+      }
+    }
     const t = this.thr;
     updateLoops(speed / BOOST_SPEED, Math.max(t.down, t.front, this.grip * 0.4, Math.max(t.sidePos, t.sideNeg) * 0.35), t.rear, !this.onGround);
 
-    const st = Math.min(2, Math.floor(this.pos.z / 500));
-    if (st !== this.stage && st > this.stage) {
-      this.stage = st;
-      this.events.onStage(st);
+    if (!this.onRibbon && this.world.mission === 0) {
+      if (this.pos.z > 50) this.hint('fly');
+      if (this.pos.z > 140) this.hint('boost');
+      if (this.pos.z > 430) this.hint('grip');
     }
-    // contextual first-run hints
-    if (this.pos.z > 60) this.hint('fly');
-    if (this.pos.z > 115 && this.pos.z < 150) this.hint('ramp');
-    if (this.pos.z > 240) this.hint('boost');
-    if (this.pos.z > 420) this.hint('grip');
-    if (this.pos.z > 330 && !this.onGround && !this.stuntAir) this.hint('roll');
-    if (this.pos.z > 545) this.hint('barrier');
-    if (this.pos.z > 1030) this.hint('gantry');
-    const near = this.world.stuntAt(this.pos.z);
-    if (near && this.pos.z > near.funnelZ0 - 70 && this.pos.z < near.funnelZ0) this.hint('stunt');
   }
 
   // ---------------- stunt ramp ----------------
@@ -798,7 +872,9 @@ export class Game {
       this.thr.front = 1;
     }
 
-    const offroad = Math.abs(this.pos.x) > ROAD_HALF_WIDTH + 1;
+    const offroad = !this.world.dynamics && Math.abs(this.pos.x) > ROAD_HALF_WIDTH + 1;
+    const supportY = this.world.dynamics ? this.world.support(this.pos.x, this.pos.z, this.pos.y + 0.4) : null;
+    const wind = this.world.dynamics?.wind(this.pos.z) ?? 0;
     if (this.onGround) {
       this.hoverBurn = 0;
       if (inp.throttle > 0) {
@@ -816,7 +892,7 @@ export class Game {
       if (offroad) fwd -= fwd * 0.5 * dt;
       if (fwd > top) fwd += (top - fwd) * Math.min(1, dt * 1.5);
       fwd = Math.max(-12, fwd);
-      lat *= Math.exp(-((this.boosting ? 6 : 9) + this.grip * 10) * dt);
+      lat *= Math.exp(-(wind ? 2.2 : (this.boosting ? 6 : 9) + this.grip * 10) * dt);
     } else {
       if (inp.throttle > 0) fwd += 6 * dt * Math.max(0, 1 - fwd / top);
       if (this.boosting) fwd += BOOST_ACCEL * 0.7 * Math.max(0, 1 - fwd / top) * dt;
@@ -842,9 +918,10 @@ export class Game {
     const nfz = Math.cos(this.heading);
     this.vel.x = nfx * fwd + -nfz * lat;
     this.vel.z = nfz * fwd + nfx * lat;
+    if (wind) this.vel.x += wind * dt;
 
     // ---- down thrusters: a hop, then a short hover while held (not sustained flight) ----
-    const ground = this.world.groundHeight(this.pos.x, this.pos.z);
+    const ground = supportY ?? (this.world.dynamics ? 0 : this.world.groundHeight(this.pos.x, this.pos.z));
     const alt = this.pos.y - ground;
     if (inp.thrustPressed && this.onGround && this.air > HOP_COST) {
       this.air -= HOP_COST;
@@ -885,7 +962,9 @@ export class Game {
     }
 
     if (!this.onGround) {
-      this.vel.y += GRAVITY * dt;
+      const gScale = this.world.dynamics?.lowG(this.pos.z) ? 0.28 : 1;
+      this.lowG = gScale;
+      this.vel.y += GRAVITY * gScale * dt;
       // wing-body lift makes descents floaty at speed
       if (this.vel.y < 0) this.vel.y += Math.min(10, Math.max(0, fwd) * 0.17) * dt;
       this.vel.y -= this.vel.y * 0.25 * dt;
@@ -916,6 +995,8 @@ export class Game {
     }
 
     this.pos.addScaledVector(this.vel, dt);
+    const carry = this.onGround ? this.world.dynamics?.carry(this.pos.x, this.pos.z, this.pos.y) : null;
+    if (carry) this.pos.addScaledVector(carry, dt);
   }
 
   // ---------------- thrusters ----------------
@@ -980,33 +1061,384 @@ export class Game {
     else if ((this.compressorWait -= dt) <= 0) this.addAir(AIR_REFILL * dt * (this.onGround || this.rail ? 1 : 0.6));
   }
 
+  // ---------------- ribbon circuits ----------------
+
+  private seatOnTrack(s: number) {
+    const frames = this.world.trackFrames;
+    if (!frames?.length) return;
+    const f = sampleTrack(frames, Number.isFinite(s) ? s : 2);
+    this.ribbonFrame = f;
+    this.ribbonS = f.s;
+    this.ribbonU = 0;
+    this.ribbonVs = 0;
+    this.ribbonVu = 0;
+    this.ribbonVh = 0;
+    this.ribbonAttached = true;
+    this.onRibbon = true;
+    this.onGround = true;
+    this.pos.copy(f.p).addScaledVector(f.n, 0.42);
+    this.vel.set(0, 0, 0);
+    this.heading = Math.atan2(f.t.x, f.t.z);
+    this.camPos.copy(this.pos).addScaledVector(f.t, -8).addScaledVector(f.n, 2.6);
+    this.camLook.copy(this.pos);
+  }
+
+  private detachRibbon(f: TrackFrame, vh: number) {
+    this.ribbonAttached = false;
+    this.onGround = false;
+    this.airTime = 0;
+    this.tricks = 0;
+    this.cushioned = false;
+    this.ribbonVh = vh;
+    this.vel.copy(f.t).multiplyScalar(this.ribbonVs).addScaledVector(f.b, this.ribbonVu).addScaledVector(f.n, vh);
+  }
+
+  private respawnRibbon() {
+    let s = 2;
+    for (const cp of this.world.checkpoints) if (cp.passed && !cp.finish) s = Math.max(s, cp.z + 2);
+    this.seatOnTrack(s);
+    this.ribbonVs = 22;
+    this.vel.copy(this.ribbonFrame!.t).multiplyScalar(this.ribbonVs);
+    this.invuln = 1;
+    this.penalize(1.5);
+    this.shake = 0.7;
+    this.bd.crashes++;
+    this.events.onCallout('RESPAWN +1.5s', 'bad');
+    sfx.crash();
+  }
+
+  private driveTrack(dt: number, inp: InputState) {
+    const frames = this.world.trackFrames;
+    if (!frames?.length) return;
+    const steerTarget = inp.steer;
+    this.steer += (steerTarget - this.steer) * Math.min(1, dt * (Math.abs(steerTarget) > Math.abs(this.steer) ? 6 : 10));
+    this.throttle = inp.throttle;
+    this.brake = inp.throttle < 0;
+    this.padBoost = Math.max(0, this.padBoost - dt);
+    const boostEdge = inp.boost && !this.boostWas;
+    this.boostWas = inp.boost;
+
+    const sample = () => sampleTrack(frames, this.ribbonS);
+    let f = this.ribbonFrame ?? sample();
+
+    if (this.ribbonAttached) {
+      if (boostEdge && this.ribbonVs < 22 && this.air > LAUNCH_COST + 4) {
+        this.launchT = LAUNCH_TIME;
+        this.air -= LAUNCH_COST;
+        this.events.onPopup('THRUSTER LAUNCH', 0, 'gold');
+        this.shake = Math.max(this.shake, 0.3);
+        sfx.boost();
+      }
+      this.launchT = Math.max(0, this.launchT - dt);
+      const mains = this.launchT > 0 || (inp.boost && this.air > 0) || this.padBoost > 0 || f.boost;
+      if (inp.boost && this.launchT <= 0) this.air = Math.max(0, this.air - REAR_DRAIN * dt);
+      if (mains) this.thr.rear = 1;
+      this.boosting = mains;
+      const top = this.boosting ? BOOST_SPEED : MAX_SPEED;
+      let vs = this.ribbonVs;
+      if (inp.throttle > 0) vs += (this.boosting ? BOOST_ACCEL : ACCEL) * inp.throttle * Math.max(0, 1 - Math.pow(Math.max(0, vs) / top, 2)) * dt;
+      else if (inp.throttle < 0 && vs > 1) {
+        const thrusterBrake = this.air > 0;
+        if (thrusterBrake) {
+          this.air = Math.max(0, this.air - FRONT_DRAIN * dt);
+          this.thr.front = 1;
+        }
+        vs = Math.max(0, vs - (thrusterBrake ? 92 : 44) * dt);
+      } else vs -= Math.sign(vs) * Math.min(Math.abs(vs), (2 + Math.abs(vs) * 0.1) * dt);
+      if (this.boosting && inp.throttle >= 0) vs += BOOST_ACCEL * 0.45 * Math.max(0, 1 - vs / top) * dt;
+      if (this.launchT > 0) vs += LAUNCH_ACCEL * dt;
+      if (vs > top) vs += (top - vs) * Math.min(1, dt * 1.5);
+      this.ribbonVs = Math.max(0, vs);
+
+      const wantsGrip = Math.abs(this.steer) > 0.45 && this.ribbonVs > 22 && this.air > 3;
+      this.grip += ((wantsGrip ? 1 : 0) - this.grip) * Math.min(1, dt * (wantsGrip ? 8 : 4));
+      if (wantsGrip) this.air = Math.max(0, this.air - GRIP_DRAIN * dt);
+      const lat = 26 * (1 + this.grip * 0.35);
+      this.ribbonVu += -this.steer * lat * dt;
+      this.ribbonVu *= Math.exp(-(this.grip > 0.4 ? 8 : 4) * dt);
+      this.ribbonU += this.ribbonVu * dt;
+
+      if (f.boost) {
+        if (this.padBoost < 0.3) {
+          this.events.onPopup('BOOST', 50, 'good');
+          this.score += 50;
+          sfx.boost();
+        }
+        this.padBoost = 1.1;
+      }
+
+      if (inp.thrustPressed && this.air > HOP_COST) {
+        this.air -= HOP_COST;
+        this.hopFx = 0.2;
+        this.hoverBurn = 0;
+        sfx.hop();
+        this.shake = Math.max(this.shake, 0.15);
+        this.detachRibbon(f, HOP_VY);
+      } else {
+        const nextS = this.ribbonS + this.ribbonVs * dt;
+        const next = sampleTrack(frames, nextS);
+        const magnet = next.wall || (Math.abs(next.n.y) < 0.82 && next.curv < 0.02) ? 32 : 2;
+        const stick = this.ribbonVs * this.ribbonVs * Math.abs(next.curv) - GRAVITY * next.n.y + magnet;
+        if (next.gap || stick < 4) this.detachRibbon(f, this.ribbonVh);
+        else {
+          const half = next.width * 0.5 - 0.65;
+          if (Math.abs(this.ribbonU) > half) {
+            const side = Math.sign(this.ribbonU);
+            this.ribbonU = side * half;
+            if (this.ribbonVu * side > 0) {
+              this.ribbonVu *= -0.25;
+              this.shake = Math.max(this.shake, 0.12);
+            }
+          }
+          this.ribbonS = nextS;
+          f = next;
+          this.ribbonFrame = f;
+          this.pos.copy(f.p).addScaledVector(f.b, this.ribbonU).addScaledVector(f.n, 0.42);
+          this.vel.copy(f.t).multiplyScalar(this.ribbonVs).addScaledVector(f.b, this.ribbonVu);
+          this.heading = Math.atan2(f.t.x, f.t.z);
+          this.onGround = true;
+          this.hoverBurn = 0;
+        }
+      }
+    }
+
+    if (!this.ribbonAttached) {
+      f = sampleTrack(frames, this.ribbonS);
+      this.ribbonFrame = f;
+      this.launchT = Math.max(0, this.launchT - dt);
+      const mains = this.launchT > 0 || (inp.boost && this.air > 0);
+      if (mains) {
+        if (this.launchT <= 0) this.air = Math.max(0, this.air - REAR_DRAIN * dt);
+        this.thr.rear = 1;
+        this.vel.addScaledVector(f.t, BOOST_ACCEL * 0.65 * dt);
+      }
+      this.boosting = this.padBoost > 0 || mains;
+      if (inp.throttle < 0 && this.air > 0 && this.vel.dot(f.t) > 3) {
+        this.air = Math.max(0, this.air - FRONT_DRAIN * dt);
+        this.thr.front = 1;
+        this.vel.addScaledVector(f.t, -22 * dt);
+      }
+      if (this.air > 0 && Math.abs(this.steer) > 0.05) {
+        this.vel.addScaledVector(f.b, -this.steer * AIR_STRAFE * dt);
+        this.air = Math.max(0, this.air - 4 * dt);
+      }
+      this.hopFx = Math.max(0, this.hopFx - dt);
+      if (this.hopFx > 0) this.thr.down = 1;
+      if (inp.thrust && this.air > 0 && this.hoverBurn < HOVER_TIME) {
+        this.hoverBurn += dt;
+        const fade = THREE.MathUtils.clamp((HOVER_TIME - this.hoverBurn) / 0.35, 0, 1);
+        this.vel.addScaledVector(f.n, HOVER_ACCEL * 0.85 * fade * dt);
+        this.air = Math.max(0, this.air - HOVER_DRAIN * dt);
+        this.thr.down = Math.max(this.thr.down, 0.4 + 0.6 * fade);
+      }
+      this.vel.y += GRAVITY * dt;
+      this.vel.multiplyScalar(1 - 0.04 * dt);
+      this.pos.addScaledVector(this.vel, dt);
+      this.ribbonS = THREE.MathUtils.clamp(this.ribbonS + this.vel.dot(f.t) * dt, 0, this.world.trackLength);
+      f = sampleTrack(frames, this.ribbonS);
+      this.ribbonFrame = f;
+      const rel = this.tmp.copy(this.pos).sub(f.p);
+      this.ribbonU = rel.dot(f.b);
+      const h = rel.dot(f.n);
+      this.ribbonVs = this.vel.dot(f.t);
+      this.ribbonVu = this.vel.dot(f.b);
+      this.ribbonVh = this.vel.dot(f.n);
+      this.heading = Math.atan2(f.t.x, f.t.z);
+      this.onGround = false;
+      this.airTime += dt;
+      const half = f.width * 0.5 - 0.4;
+      if (!f.gap && h < 1.2 && h > -0.2 && Math.abs(this.ribbonU) <= half && this.ribbonVh < 8) {
+        this.ribbonAttached = true;
+        this.onGround = true;
+        this.ribbonU = THREE.MathUtils.clamp(this.ribbonU, -half, half);
+        this.ribbonVh = 0;
+        this.pos.copy(f.p).addScaledVector(f.b, this.ribbonU).addScaledVector(f.n, 0.42);
+        this.vel.copy(f.t).multiplyScalar(Math.max(0, this.ribbonVs)).addScaledVector(f.b, this.ribbonVu);
+        sfx.land();
+        this.shake = Math.max(this.shake, 0.15);
+        this.hoverBurn = 0;
+        this.airTime = 0;
+      } else if ((h < -8 || this.pos.y < -2) && this.invuln <= 0) {
+        this.respawnRibbon();
+        return;
+      }
+    }
+
+    this.passRibbonMarks(f);
+    this.collectNearby();
+  }
+
+  private passRibbonMarks(f: TrackFrame) {
+    for (const cp of this.world.checkpoints) {
+      if (cp.passed || !(this.ribbonS - Math.max(0.01, this.ribbonVs) * SIM_DT < cp.z && this.ribbonS >= cp.z)) continue;
+      cp.passed = true;
+      if (cp.finish) {
+        this.endRun(true);
+        return;
+      }
+      this.bd.checkpoints++;
+      this.score += 500;
+      this.events.onCallout('CHECKPOINT', 'good');
+      sfx.checkpoint();
+      this.flash = Math.max(this.flash, 0.25);
+    }
+    if (f.finish && this.ribbonS >= this.world.trackLength - 1) this.endRun(true);
+  }
+
+  private collectNearby() {
+    for (const r of this.world.rings) {
+      if (r.collected) continue;
+      if (this.pos.distanceTo(r.pos) < r.radius * 1.2) this.collectRingFx(r);
+    }
+  }
+
+  private collectRingFx(r: Ring) {
+    this.world.collectRing(r);
+    this.addCombo();
+    const pts = 120 * this.combo;
+    this.score += pts;
+    this.bd.rings++;
+    if (!this.world.attack) this.timeLeft += 0.5;
+    this.addAir(14);
+    this.padBoost = Math.max(this.padBoost, 0.55);
+    this.shake = Math.max(this.shake, 0.5);
+    this.flash = Math.max(this.flash, 0.7);
+    this.fovKick = Math.max(this.fovKick, 8);
+    this.events.onPopup(`RING ×${this.combo}`, pts, 'gold');
+    sfx.ring(this.combo);
+    this.exhaust.emit({ count: 42, pos: r.pos, spread: r.radius, velSpread: 16, life: 0.55, size: 0.6, grow: -0.3, color: 0x9af6ff, drag: 1.4 });
+    this.vapour.emit({ count: 24, pos: r.pos, spread: r.radius * 0.7, velSpread: 9, life: 0.65, size: 0.7, grow: 3.2, color: 0xffffff, alpha: 0.75, drag: 2, gravity: -0.4, fadeIn: 0.02 });
+  }
+
+  private collideSupport() {
+    const g = this.world.support(this.pos.x, this.pos.z, this.pos.y + 0.45);
+    if (g == null) {
+      if (this.onGround) {
+        this.onGround = false;
+        this.airTime = 0;
+        this.tricks = 0;
+      }
+      if (this.pos.y < -12 && this.invuln <= 0) this.respawnProving();
+      return;
+    }
+    if (this.pos.y <= g) {
+      const impact = -this.vel.y;
+      this.pos.y = g;
+      if (!this.onGround) this.land(impact);
+      const ahead = this.world.support(this.pos.x, this.pos.z + 0.7, g + 1.5);
+      const behind = this.world.support(this.pos.x, this.pos.z - 0.7, g + 1.5);
+      const slope = ahead != null && behind != null ? (ahead - behind) / 1.4 : 0;
+      this.vel.y = Math.max(-8, slope * Math.max(0, this.vel.z));
+      this.onGround = true;
+    } else if (this.onGround && this.pos.y - g > 0.45) {
+      this.onGround = false;
+      this.airTime = 0;
+      this.tricks = 0;
+    }
+  }
+
+  private respawnProving() {
+    let z = 0;
+    for (const cp of this.world.checkpoints) if (cp.passed && !cp.finish) z = Math.max(z, cp.z);
+    this.pos.set(0, 1.4, z + 6);
+    this.vel.set(0, 0, 18);
+    this.heading = 0;
+    this.onGround = true;
+    this.invuln = 1.2;
+    this.penalize(3);
+    this.shake = 0.8;
+    this.bd.crashes++;
+    this.events.onCallout('RESPAWN −3s', 'bad');
+    sfx.crash();
+  }
+
+  private penalize(seconds: number) {
+    if (this.world.attack) this.runTime += seconds;
+    else this.timeLeft = Math.max(0, this.timeLeft - seconds);
+  }
+
+  private loadGhost(mission: number) {
+    this.ghost.visible = false;
+    this.ghostTimes = [];
+    this.ghostPos = [];
+    this.ghostQuat = [];
+    if (!MISSIONS[mission]?.attack) return;
+    try {
+      const raw = localStorage.getItem(`roadster-ghost-${mission}`);
+      if (!raw) return;
+      const samples = JSON.parse(raw) as { t: number; p: number[]; q: number[] }[];
+      for (const s of samples) {
+        this.ghostTimes.push(s.t);
+        this.ghostPos.push(new THREE.Vector3(s.p[0], s.p[1], s.p[2]));
+        this.ghostQuat.push(new THREE.Quaternion(s.q[0], s.q[1], s.q[2], s.q[3]));
+      }
+      this.ghost.visible = this.ghostTimes.length > 2;
+    } catch {
+      this.ghost.visible = false;
+    }
+  }
+
+  private recordGhost() {
+    const last = this.recorded[this.recorded.length - 1];
+    if (last && this.runTime - last.t < 0.12) return;
+    this.recorded.push({ t: this.runTime, p: this.pos.clone(), q: this.car.root.quaternion.clone() });
+  }
+
+  private saveGhost() {
+    if (!this.world.attack || this.recorded.length < 2) return;
+    const key = `roadster-best-time-${this.world.mission}`;
+    const prev = Number(localStorage.getItem(key) || 0);
+    if (prev && this.runTime >= prev) return;
+    localStorage.setItem(key, String(this.runTime));
+    const samples = this.recorded.map((s) => ({ t: Math.round(s.t * 100) / 100, p: s.p.toArray(), q: s.q.toArray() }));
+    localStorage.setItem(`roadster-ghost-${this.world.mission}`, JSON.stringify(samples));
+  }
+
+  private updateGhost() {
+    if (!this.ghostTimes.length || this.mode !== 'race') {
+      if (this.mode !== 'race') this.ghost.visible = false;
+      return;
+    }
+    const t = this.runTime;
+    let i = 0;
+    while (i < this.ghostTimes.length - 2 && this.ghostTimes[i + 1] < t) i++;
+    const t0 = this.ghostTimes[i];
+    const t1 = this.ghostTimes[i + 1];
+    const u = THREE.MathUtils.clamp((t - t0) / Math.max(0.0001, t1 - t0), 0, 1);
+    this.ghost.position.copy(this.ghostPos[i]).lerp(this.ghostPos[i + 1], u);
+    this.ghost.quaternion.copy(this.ghostQuat[i]).slerp(this.ghostQuat[i + 1], u);
+    this.ghost.visible = t <= this.ghostTimes[this.ghostTimes.length - 1];
+  }
+
   private collide(dt: number) {
     const prevZ = this.pos.z - this.vel.z * dt;
 
     // ---- ground ----
-    const g = this.world.groundHeight(this.pos.x, this.pos.z);
     if (this.rail) {
       // the corkscrew deck carries the car; skip terrain contact
-    } else if (this.pos.y <= g) {
-      const impact = -this.vel.y;
-      this.pos.y = g;
-      if (!this.onGround) this.land(impact);
-      const slope = (this.world.groundHeight(this.pos.x, this.pos.z + 0.5) - this.world.groundHeight(this.pos.x, this.pos.z - 0.5)) / 1;
-      // the slope sample straddles ramp lips, where it is close to vertical; never fling the car down off one
-      this.vel.y = Math.max(-8, slope * this.vel.z);
-      this.onGround = true;
-    } else if (this.onGround) {
-      // ran off a ramp lip or a ledge
-      if (this.pos.y - g > 0.25) {
-        this.onGround = false;
-        this.airTime = 0;
-        this.tricks = 0;
-      } else {
+    } else if (this.world.dynamics) {
+      this.collideSupport();
+    } else {
+      const g = this.world.groundHeight(this.pos.x, this.pos.z);
+      if (this.pos.y <= g) {
+        const impact = -this.vel.y;
         this.pos.y = g;
+        if (!this.onGround) this.land(impact);
+        const slope = (this.world.groundHeight(this.pos.x, this.pos.z + 0.5) - this.world.groundHeight(this.pos.x, this.pos.z - 0.5)) / 1;
+        this.vel.y = Math.max(-8, slope * this.vel.z);
+        this.onGround = true;
+      } else if (this.onGround) {
+        if (this.pos.y - g > 0.25) {
+          this.onGround = false;
+          this.airTime = 0;
+          this.tricks = 0;
+        } else {
+          this.pos.y = g;
+        }
       }
     }
 
-    // ---- rails ----
+    if (!this.world.dynamics) {
     const limit = RAIL_X - 1.1;
     if (Math.abs(this.pos.x) > limit) {
       const s = Math.sign(this.pos.x);
@@ -1041,6 +1473,7 @@ export class Game {
         }
         this.heading *= 0.8;
       }
+    }
     }
 
     // ---- player AABB (heading-aware) ----
@@ -1114,22 +1547,14 @@ export class Game {
 
     // ---- rings ----
     for (const r of this.world.rings) {
-      if (r.collected || r.passed) continue;
-      if (prevZ < r.pos.z && this.pos.z >= r.pos.z) {
-        r.passed = true;
-        const d = Math.hypot(this.pos.x - r.pos.x, this.pos.y + 0.6 - r.pos.y);
-        if (d < r.radius * 0.95) {
-          this.world.collectRing(r);
-          this.addCombo();
-          const pts = 100 * this.combo;
-          this.score += pts;
-          this.bd.rings++;
-          this.timeLeft += 0.5;
-          this.addAir(12);
-          this.events.onPopup('RING', pts, 'good');
-          sfx.ring(this.combo);
-          this.exhaust.emit({ count: 40, pos: r.pos, spread: r.radius * 1.4, velSpread: 10, life: 0.6, size: 0.5, grow: -0.5, color: 0x6fe4ff, drag: 2 });
-        }
+      if (r.collected) continue;
+      const through = prevZ < r.pos.z && this.pos.z >= r.pos.z;
+      const near = this.tmp.copy(this.pos).setY(this.pos.y + 0.7).distanceTo(r.pos) < r.radius * 1.05;
+      if (!through && !near) continue;
+      r.passed = true;
+      if (near || through) {
+        const d = this.tmp.copy(this.pos).setY(this.pos.y + 0.7).distanceTo(r.pos);
+        if (d < r.radius * 1.15) this.collectRingFx(r);
       }
     }
 
@@ -1142,6 +1567,12 @@ export class Game {
             this.score += 50;
             sfx.boost();
             this.shake = Math.max(this.shake, 0.2);
+            if (this.world.dynamics?.lowG(this.pos.z)) {
+              this.vel.y = 18;
+              this.onGround = false;
+              this.airTime = 0;
+              this.events.onCallout('BOUNCE', 'gold');
+            }
           }
           this.padBoost = 1.6;
         }
@@ -1207,14 +1638,14 @@ export class Game {
     this.comboTimer = 0;
     this.vel.x *= 0.5;
     this.vel.z *= 0.5;
-    this.timeLeft -= 2;
+    this.penalize(2);
     this.shake = 0.7;
     this.flash = 0.7;
     this.tricks = 0;
     sfx.thud();
     this.burstSmoke(30, 5);
     this.sparks(this.pos, 30);
-    this.events.onCallout(`${label} −2s`, 'bad');
+    this.events.onCallout(`${label} ${this.world.attack ? '+2s' : '−2s'}`, 'bad');
   }
 
   private crash(label: string, car: TrafficCar | null) {
@@ -1222,13 +1653,13 @@ export class Game {
     if (this.stuntAir) this.stuntHit = true;
     this.combo = 1;
     this.comboTimer = 0;
-    this.timeLeft -= 3;
+    this.penalize(3);
     this.shake = 1;
     this.flash = 1;
     this.invuln = 1.4;
     sfx.crash();
     this.sparks(this.tmp.copy(this.pos).setY(this.pos.y + 0.8).addScaledVector(this.tmp2.set(Math.sin(this.heading), 0, Math.cos(this.heading)), 2), 50);
-    this.events.onCallout(`${label} −3s`, 'bad');
+    this.events.onCallout(`${label} ${this.world.attack ? '+3s' : '−3s'}`, 'bad');
     if (car) {
       const push = this.tmp2.set(this.vel.x * 0.4 + Math.sign(car.pos.x - this.pos.x || 1) * 6, 0, Math.max(this.vel.z * 0.7, car.speed + 6));
       this.world.knock(car, push);
@@ -1236,13 +1667,22 @@ export class Game {
     }
   }
 
-  /** Pop the car clear of a static obstacle (under or over it) so a crash never pins it in place. */
+  /** Pop the car clear of a static obstacle so a crash never pins it in place. */
   private deflect(box: THREE.Box3) {
     this.vel.z *= 0.4;
     this.vel.x *= 0.5;
     const mid = (box.min.y + box.max.y) / 2;
-    if (box.min.y > 2 && this.pos.y + 0.7 < mid) {
-      this.pos.y = Math.max(this.world.groundHeight(this.pos.x, this.pos.z), box.min.y - 1.4);
+    const floor = this.world.support(this.pos.x, this.pos.z, this.pos.y + 0.4) ?? this.world.groundHeight(this.pos.x, this.pos.z);
+    if (box.min.y < 1.2) {
+      this.pos.z = Math.min(this.pos.z, box.min.z - 2.4);
+      this.pos.y = Math.max(this.pos.y, floor);
+      this.vel.z = Math.min(this.vel.z, -6);
+      this.vel.y = 0;
+      this.onGround = true;
+      return;
+    }
+    if (this.pos.y + 0.7 < mid) {
+      this.pos.y = Math.max(floor, box.min.y - 1.4);
       this.vel.y = Math.min(this.vel.y, -4);
     } else {
       this.pos.y = box.max.y + 0.05;
@@ -1256,11 +1696,13 @@ export class Game {
   private updateCarPose(dt: number, inp: InputState, live: boolean) {
     const fwd = this.vel.x * Math.sin(this.heading) + this.vel.z * Math.cos(this.heading);
     const accel = live ? inp.throttle : 0;
-    const targetPitch = this.rail
-      ? -Math.atan(this.pose.slope)
-      : this.onGround
-        ? -accel * 0.03 + (this.brake ? 0.04 : 0)
-        : THREE.MathUtils.clamp(-this.vel.y * 0.02, -0.25, 0.25);
+    const targetPitch = this.onRibbon
+      ? THREE.MathUtils.clamp(-this.ribbonVh * 0.035, -0.35, 0.4)
+      : this.rail
+        ? -Math.atan(this.pose.slope)
+        : this.onGround
+          ? -accel * 0.03 + (this.brake ? 0.04 : 0)
+          : THREE.MathUtils.clamp(-this.vel.y * 0.02, -0.25, 0.25);
     const targetRoll = this.steer * (this.onGround ? 0.06 : 0.3) * Math.min(1, Math.abs(fwd) / 20);
     this.bodyPitch += (targetPitch - this.bodyPitch) * Math.min(1, dt * 6);
     this.bodyRoll += (targetRoll - this.bodyRoll) * Math.min(1, dt * 6);
@@ -1283,6 +1725,15 @@ export class Game {
         sidePos: blip(0),
         sideNeg: blip(0.5),
       };
+    } else if (this.onRibbon && this.ribbonFrame) {
+      const f = this.ribbonFrame;
+      this.basis.makeBasis(f.b, f.n, f.t);
+      this.trackQuat.setFromRotationMatrix(this.basis);
+      r.position.copy(this.pos);
+      r.quaternion.copy(this.trackQuat);
+      const trick = this.rolling ? this.rollDir * this.roll * Math.PI * 2 : 0;
+      this.car.body.rotation.set(this.bodyPitch, 0, -this.bodyRoll + trick, 'YXZ');
+      this.car.body.position.y = this.ribbonAttached ? Math.sin(this.clock * 30) * 0.003 : 0;
     } else {
       r.position.copy(this.pos);
       r.rotation.set(0, this.heading, 0);
@@ -1306,7 +1757,7 @@ export class Game {
         brake: this.brake && this.mode === 'race',
         night: this.look.night,
       },
-      showroom ? 0 : this.world.groundHeight(this.pos.x, this.pos.z)
+      showroom ? 0 : this.onRibbon ? this.pos.y - 0.45 : (this.world.support(this.pos.x, this.pos.z, this.pos.y + 0.5) ?? this.pos.y - 2)
     );
   }
 
@@ -1321,7 +1772,7 @@ export class Game {
     const q = FX_SCALE[this.settings.quality];
     const showroom = this.mode === 'showroom';
     const carVel = showroom ? this.tmp3.set(0, 0, 0) : this.tmp3.copy(this.vel);
-    const ground = showroom ? 0 : this.world.groundHeight(this.pos.x, this.pos.z);
+    const ground = showroom ? 0 : this.onRibbon ? this.pos.y - 0.5 : (this.world.support(this.pos.x, this.pos.z, this.pos.y + 0.5) ?? this.pos.y - 2.5);
     const stage = Math.min(2, Math.floor(this.pos.z / 500));
     const dust = stage === 0 ? 0xd2b58e : stage === 1 ? 0xd9dde2 : 0x9a96b0;
     const P = this.tmp;
@@ -1439,6 +1890,7 @@ export class Game {
   }
 
   private updateCoast(dt: number) {
+    if (this.onRibbon) return;
     // let the car roll to a stop after the run
     this.vel.multiplyScalar(Math.exp(-1.2 * dt));
     if (!this.onGround) this.vel.y += GRAVITY * dt;
@@ -1464,8 +1916,33 @@ export class Game {
       this.camLook.set(0, wide ? 1.7 : 2.3, 0).addScaledVector(right, wide ? -2.6 : 0);
       cam.lookAt(this.camLook);
       this.setFov(wide ? 42 : 48, dt);
+      cam.up.set(0, 1, 0);
       return;
     }
+
+    if (this.onRibbon && this.ribbonFrame) {
+      const f = this.ribbonFrame;
+      const speed = Math.hypot(this.vel.x, this.vel.z);
+      const dist = 7.6 + speed * 0.04;
+      const target = this.tmp.copy(this.pos).addScaledVector(f.t, -dist).addScaledVector(f.n, 2.4);
+      const lookTarget = this.tmp2.copy(this.pos).addScaledVector(f.t, 8 + speed * 0.05).addScaledVector(f.n, 1.1);
+      const a = 1 - Math.exp(-dt * 8);
+      this.camPos.lerp(target, a);
+      this.camLook.lerp(lookTarget, a);
+      cam.up.copy(f.n);
+      cam.position.copy(this.camPos);
+      this.shake = Math.max(0, this.shake - dt * 1.8);
+      if (this.settings.shake) {
+        const s = this.shake * this.shake * 0.6 + (this.boosting ? 0.02 : 0);
+        cam.position.addScaledVector(f.n, (Math.random() - 0.5) * s);
+      }
+      cam.lookAt(this.camLook);
+      this.fovKick = Math.max(0, this.fovKick - dt * 16);
+      this.setFov(62 + Math.min(1, speed / BOOST_SPEED) * 12 + (this.boosting ? 8 : 0) + this.fovKick, dt);
+      return;
+    }
+
+    cam.up.set(0, 1, 0);
 
     const fx = Math.sin(this.heading);
     const fz = Math.cos(this.heading);
@@ -1476,7 +1953,7 @@ export class Game {
     const dist = 7.4 + speed * 0.045 + air * 2.5 + this.stuntCam * 4;
     const height = 2.5 + air * 2.2 + (this.mode === 'countdown' ? 0.4 : 0) + this.stuntCam * 2;
     const target = this.tmp.set(this.pos.x - fx * dist, this.pos.y * 0.85 + height, this.pos.z - fz * dist);
-    target.y = Math.max(target.y, this.world.groundHeight(target.x, target.z) + 1.2);
+    target.y = Math.max(target.y, (this.world.dynamics ? (this.world.support(target.x, target.z, target.y) ?? target.y - 2) : this.world.groundHeight(target.x, target.z)) + 1.2);
     // on the corkscrew the camera rides the tube axis so the deck never sits between it and the car
     this.railCam += ((this.rail ? 1 : 0) - this.railCam) * Math.min(1, dt * (this.rail ? 4 : 1.5));
     const tube = this.rail ?? this.stuntAir;
@@ -1516,7 +1993,8 @@ export class Game {
     this.camRoll += ((this.rail ? this.stuntRoll : 0) - this.camRoll) * Math.min(1, dt * (this.rail ? 10 : 2.2));
     cam.rotateZ(-this.bodyRoll * 0.25 - this.camRoll);
     const speed01 = Math.min(1, speed / BOOST_SPEED);
-    this.setFov(60 + speed01 * 14 + (this.boosting ? 8 : 0) - this.railCam * 12, dt);
+    this.fovKick = Math.max(0, this.fovKick - dt * 16);
+    this.setFov(60 + speed01 * 14 + (this.boosting ? 8 : 0) - this.railCam * 12 + this.fovKick, dt);
   }
 
   private setFov(f: number, dt: number) {

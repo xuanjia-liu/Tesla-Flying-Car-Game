@@ -72,7 +72,7 @@ interface HudProps {
 
 export default function Hud({ stats, popups, callouts, hint, touch }: HudProps) {
   const secs = Math.max(0, stats.timeLeft);
-  const urgent = secs < 10 && stats.countdown <= 0;
+  const urgent = !stats.attack && secs < 10 && stats.countdown <= 0;
   const mph = Math.round(stats.speed * 2.237);
   const counting = stats.countdown > 0;
   const cd = Math.ceil(stats.countdown);
@@ -102,8 +102,11 @@ export default function Hud({ stats, popups, callouts, hint, touch }: HudProps) 
           {Math.floor(secs)}
           <span className="text-lg sm:text-2xl">.{Math.floor((secs % 1) * 10)}</span>
         </div>
-        <div className="mt-1 text-[9px] font-semibold tracking-[0.35em] text-white/55 sm:text-[10px]">{STAGE_NAMES[stats.stage]}</div>
+        <div className="mt-1 text-[9px] font-semibold tracking-[0.35em] text-white/55 sm:text-[10px]">{stats.mission || STAGE_NAMES[stats.stage]}</div>
         <Progress progress={stats.progress} />
+        {stats.attack && stats.countdown <= 0 && (
+          <div className="mt-1 text-[9px] font-semibold tracking-[0.28em] text-white/45">R RESTART</div>
+        )}
       </div>
 
       {/* popups */}

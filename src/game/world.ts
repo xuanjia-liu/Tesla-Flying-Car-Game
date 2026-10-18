@@ -5,6 +5,9 @@ import type { StageLook } from './environment';
 import { bannerTexture, checkerTexture, groundTexture, hazardTexture, roadTextures } from './textures';
 import { COURSE_LENGTH, RAIL_X, STAGE_LENGTH } from './types';
 import { buildRamp, cybertruckGeometry, landingTexture, makeStunt, semiGeometry, type Stunt } from './stunts';
+import { buildProving, type Dynamics } from './proving';
+import { CIRCUITS } from './missions';
+import { buildTrack, type TrackFrame } from './track';
 
 export const LANES = [-11.25, -3.75, 3.75, 11.25];
 const RING_RADIUS = 3.2;
@@ -15,6 +18,9 @@ export interface Ring {
   collected: boolean;
   passed: boolean;
   index: number;
+  pulse: number;
+  /** torus faces along this axis (track direction). Defaults to +Z. */
+  axis: THREE.Vector3;
 }
 
 export interface Ramp {
@@ -158,6 +164,16 @@ export class World {
   stunts: Stunt[] = [];
   checkpoints: Checkpoint[] = [];
   traffic: TrafficCar[] = [];
+  mission = 0;
+  attack = false;
+  courseLength = COURSE_LENGTH;
+  trackFrames: TrackFrame[] | null = null;
+  trackLength = 0;
+  spawnPoint = new THREE.Vector3();
+  zones: { z: number; text: string; shown: boolean }[] = [];
+  dynamics: Dynamics | null = null;
+  playerPos = new THREE.Vector3();
+  playerSpeed = 0;
 
   private ringMesh!: THREE.InstancedMesh;
   private ringMat!: THREE.MeshStandardMaterial;
@@ -176,19 +192,136 @@ export class World {
   private s3 = new THREE.Vector3();
 
   constructor(private props: Map<string, PropAsset>, private maxAnisotropy: number) {
-    this.buildRoad();
-    this.buildDesert();
-    this.buildCoast();
-    this.buildCity();
-    this.buildRails();
-    this.buildRamps();
-    this.buildStunts();
-    this.buildPads();
-    this.buildBarriers();
-    this.buildGantries();
-    this.buildGates();
-    this.buildRings();
-    this.buildTrafficPool();
+    this.load(0);
+  }
+
+  load(id: number) {
+    this.clearBuilt();
+    this.mission = id;
+    this.attack = id > 0;
+    this.trackFrames = null;
+    this.dynamics = null;
+    this.zones = [];
+    if (id <= 0) this.installProving();
+    else this.installCircuit(id);
+    this.reset();
+  }
+
+  private clearBuilt() {
+    const kids = [...this.group.children];
+    for (const c of kids) {
+      this.group.remove(c);
+      c.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh && !(o instanceof THREE.InstancedMesh)) return;
+        mesh.geometry?.dispose();
+        const m = mesh.material;
+        if (Array.isArray(m)) m.forEach((x) => x.dispose());
+        else m?.dispose();
+      });
+    }
+    this.rings = [];
+    this.ramps = [];
+    this.pads = [];
+    this.obstacles = [];
+    this.stunts = [];
+    this.checkpoints = [];
+    this.traffic = [];
+    this.nightMats = [];
+    this.trafficMeshes = [];
+  }
+
+  private installProving() {
+    const built = buildProving();
+    this.group.add(built.group);
+    this.dynamics = built.dynamics;
+    this.courseLength = built.dynamics.courseLength;
+    this.checkpoints = built.checkpoints;
+    this.obstacles = built.obstacles;
+    this.pads = built.pads;
+    this.zones = built.zones.map((z) => ({ ...z, shown: false }));
+    this.makeRings(built.rings.map((p) => ({ p, axis: new THREE.Vector3(0, 0, 1) })), 0x1fb8ff);
+    this.spawnPoint.set(0, 0, 0);
+  }
+
+  private installCircuit(id: number) {
+    const night = id === 2;
+    const built = buildTrack(CIRCUITS[id - 1], {
+      width: 11,
+      y: id === 1 ? 7 : 12,
+      accent: night ? 0xff4ad8 : 0xff8a5a,
+      edge: night ? 0x7af0ff : 0xff8a5a,
+      night,
+    });
+    this.trackFrames = built.frames;
+    this.trackLength = built.length;
+    this.courseLength = built.length;
+    this.spawnPoint.copy(built.spawn);
+    this.group.add(built.group);
+    if (night) this.sceneryNight();
+    else this.sceneryCoast();
+    this.makeRings(
+      built.rings.map((r) => ({ p: r.p, axis: r.t })),
+      night ? 0xff4ad8 : 0xffb15a
+    );
+    let n = 0;
+    for (const f of built.frames) {
+      if (!f.checkpoint && !f.finish) continue;
+      this.checkpoints.push({ z: f.s, bonus: 0, passed: false, finish: f.finish });
+      n++;
+    }
+    void n;
+  }
+
+  private sceneryCoast() {
+    const water = new THREE.Mesh(
+      new THREE.PlaneGeometry(2400, 2400),
+      new THREE.MeshStandardMaterial({ color: 0x123a5a, roughness: 0.12, metalness: 0.45, emissive: 0x062033, emissiveIntensity: 0.3 })
+    );
+    water.rotation.x = -Math.PI / 2;
+    water.position.set(0, -1.5, 200);
+    this.add(water);
+    const isleMat = new THREE.MeshStandardMaterial({ color: 0x3e5a3a, roughness: 1, flatShading: true });
+    const isles: THREE.Matrix4[] = [];
+    for (let i = 0; i < 8; i++) {
+      const side = i % 2 ? 1 : -1;
+      isles.push(this.tf(side * (140 + (i % 3) * 40), -2, i * 80, 50 + (i % 4) * 12, 16, 40));
+    }
+    this.instanced(new THREE.SphereGeometry(1, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), isleMat, isles);
+  }
+
+  private sceneryNight() {
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(1800, 1800),
+      new THREE.MeshStandardMaterial({ color: 0x12131a, roughness: 0.6, metalness: 0.15 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(0, -0.4, 200);
+    this.add(ground, 'receive');
+    const glow = new THREE.MeshStandardMaterial({ color: 0x1a1030, emissive: 0xff2bd6, emissiveIntensity: 0.7, roughness: 0.4 });
+    const boxes: THREE.Matrix4[] = [];
+    for (let i = 0; i < 24; i++) {
+      const side = i % 2 ? 1 : -1;
+      const h = 18 + (i % 5) * 10;
+      boxes.push(this.tf(side * (40 + (i % 4) * 16), h / 2, -20 + i * 28, 12, h, 12));
+    }
+    this.instanced(new THREE.BoxGeometry(1, 1, 1), glow, boxes);
+  }
+
+  private makeRings(items: { p: THREE.Vector3; axis: THREE.Vector3 }[], emissive: number) {
+    if (!items.length) return;
+    this.ringMat = new THREE.MeshStandardMaterial({ color: 0x06202c, emissive, emissiveIntensity: 1.6, metalness: 0.3, roughness: 0.3 });
+    this.ringMesh = new THREE.InstancedMesh(new THREE.TorusGeometry(RING_RADIUS, 0.18, 8, 32), this.ringMat, items.length);
+    this.ringMesh.frustumCulled = false;
+    items.forEach((item, i) => this.rings.push({ pos: item.p, radius: RING_RADIUS, collected: false, passed: false, index: i, pulse: 0, axis: item.axis.clone().normalize() }));
+    this.add(this.ringMesh);
+    this.updateRings(0);
+  }
+
+  /** Drivable height. Null means the car should fall. */
+  support(x: number, z: number, fromY: number): number | null {
+    if (this.dynamics) return this.dynamics.support(x, z, fromY);
+    return this.groundHeight(x, z);
   }
 
   private trackNight(mat: THREE.MeshStandardMaterial, day: number, night: number) {
@@ -851,23 +984,29 @@ export class World {
     this.ringMat = new THREE.MeshStandardMaterial({ color: 0x06202c, emissive: 0x1fb8ff, emissiveIntensity: 1.4, metalness: 0.3, roughness: 0.3 });
     this.ringMesh = new THREE.InstancedMesh(new THREE.TorusGeometry(RING_RADIUS, 0.2, 10, 48), this.ringMat, positions.length);
     this.ringMesh.frustumCulled = false;
-    positions.forEach((p, i) => this.rings.push({ pos: p, radius: RING_RADIUS, collected: false, passed: false, index: i }));
+    positions.forEach((p, i) => this.rings.push({ pos: p, radius: RING_RADIUS, collected: false, passed: false, index: i, pulse: 0, axis: new THREE.Vector3(0, 0, 1) }));
     this.add(this.ringMesh);
     this.updateRings(0);
   }
 
   private updateRings(t: number) {
+    if (!this.ringMesh) return;
     for (const r of this.rings) {
-      const s = r.collected ? 0 : 1;
-      this.q.setFromAxisAngle(this.v3.set(0, 0, 1), t * 0.8 + r.index);
-      this.m4.compose(this.s3.copy(r.pos).setY(r.pos.y + Math.sin(t * 2 + r.index) * 0.12), this.q, this.v3.set(s, s, s));
+      if (r.pulse > 0) r.pulse = Math.max(0, r.pulse - 1 / 60);
+      const grow = r.pulse > 0 ? 1 + Math.sin((1 - r.pulse / 0.45) * Math.PI) * 1.35 : 1;
+      const s = r.collected && r.pulse <= 0 ? 0 : grow;
+      const bob = r.pos.y + Math.sin(t * 2 + r.index) * 0.12;
+      this.q.setFromUnitVectors(this.v3.set(0, 0, 1), r.axis);
+      this.m4.compose(this.s3.set(r.pos.x, bob, r.pos.z), this.q, this.v3.set(s, s, s));
       this.ringMesh.setMatrixAt(r.index, this.m4);
     }
     this.ringMesh.instanceMatrix.needsUpdate = true;
+    if (this.ringMat) this.ringMat.emissiveIntensity = 1.6 + Math.sin(t * 6) * 0.25 + (this.rings.some((r) => r.pulse > 0.05) ? 3.5 : 0);
   }
 
   collectRing(r: Ring) {
     r.collected = true;
+    r.pulse = 0.45;
   }
 
   // ---------- traffic ----------
@@ -1017,6 +1156,12 @@ export class World {
 
   update(dt: number, t: number, playerZ: number, look: StageLook, fog: THREE.Fog, simulate: boolean) {
     this.updateRings(t);
+    if (this.dynamics && simulate) this.dynamics.update(dt, this.playerPos, this.playerSpeed);
+    if (!this.padMat) {
+      const n = look.night;
+      for (const { mat, day, night } of this.nightMats) mat.emissiveIntensity = day + (night - day) * n;
+      return;
+    }
     this.padMat.uniforms.uTime.value = t;
     this.padMat.uniforms.uFogColor.value.copy(fog.color);
     this.padMat.uniforms.uFogNear.value = fog.near;
@@ -1036,12 +1181,14 @@ export class World {
     for (const r of this.rings) {
       r.collected = false;
       r.passed = false;
+      r.pulse = 0;
     }
     for (const c of this.checkpoints) c.passed = false;
+    for (const z of this.zones) z.shown = false;
     for (const car of this.traffic) car.active = false;
     this.nextSpawnZ = 80;
     this.rng = mulberry32(7);
-    this.updateTraffic(0, 0);
+    if (this.trafficMeshes.length) this.updateTraffic(0, 0);
   }
 }
 

@@ -196,10 +196,11 @@ export const sfx = {
     tone('sine', 140, 70, 0.18, 0.3);
   },
   ring(combo: number) {
-    const base = 660 * Math.pow(2, Math.min(combo - 1, 10) / 12);
-    tone('triangle', base, base * 1.01, 0.18, 0.22);
-    tone('sine', base * 1.5, base * 1.5, 0.22, 0.12, 0.05);
-    tone('sine', base * 2, base * 2, 0.3, 0.08, 0.1);
+    const base = 620 * Math.pow(2, Math.min(combo - 1, 14) / 12);
+    tone('triangle', base, base * 1.5, 0.26, 0.3);
+    tone('sine', base * 2, base * 2.4, 0.3, 0.18, 0.03);
+    tone('square', base * 0.5, base * 1.1, 0.14, 0.1, 0.01);
+    burst('bandpass', Math.max(180, base), base * 3, 0.18, 0.22, 1.6);
   },
   land() {
     tone('sine', 110, 50, 0.16, 0.35);
