@@ -65,16 +65,15 @@ const plumeFragment = /* glsl */ `
     float a1 = vUv.x * 6.2832;
     float turb = 0.5 + 0.5 * sin(a1 * 3.0 + uTime * 9.0 + uSeed) * sin(t * 16.0 - uTime * 42.0 + uSeed * 2.7);
     float streak = 0.5 + 0.5 * sin(a1 * 7.0 + t * 4.0 - uTime * 3.0 + uSeed * 5.1);
-    float body = (1.0 - t) * (1.0 - t);
-    float a = uPower * pow(vFacing, 1.3) * body * (0.35 + 0.35 * turb + 0.15 * streak + core * 0.9);
-    a *= smoothstep(0.0, 0.04, t) * 0.5 + 0.5;
+    float body = pow(1.0 - t, 2.2);
+    float a = uPower * pow(vFacing, 2.2) * body * (0.18 + 0.3 * turb + 0.12 * streak + core * 0.8);
     vec3 col = mix(vec3(0.80, 0.86, 0.93), vec3(1.0), core * 0.8 + turb * 0.2);
-    gl_FragColor = vec4(col * (1.0 + core * 0.5), clamp(a, 0.0, 0.9));
+    gl_FragColor = vec4(col * (1.0 + core * 0.5), clamp(a, 0.0, 0.75));
   }
 `;
 
 const PLUME_LENGTH: Record<ThrusterGroup, number> = { rear: 2.4, front: 1.5, down: 1.9, side: 1.1 };
-const PLUME_SPREAD: Record<ThrusterGroup, number> = { rear: 0.42, front: 0.34, down: 0.5, side: 0.26 };
+const PLUME_SPREAD: Record<ThrusterGroup, number> = { rear: 0.34, front: 0.26, down: 0.32, side: 0.2 };
 const COPPER = new THREE.Color(0.78, 0.58, 0.34);
 const FROST = new THREE.Color(0.9, 0.93, 0.96);
 

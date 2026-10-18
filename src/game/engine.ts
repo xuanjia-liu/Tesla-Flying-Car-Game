@@ -60,9 +60,9 @@ const wrapAngle = (a: number) => THREE.MathUtils.euclideanModulo(a + Math.PI, Ma
 type Mode = 'showroom' | 'countdown' | 'race' | 'over';
 
 const VAPOUR: Record<ThrusterGroup, { rate: number; speed: number; size: number; life: number; reach: number; fog: number }> = {
-  rear: { rate: 90, speed: 26, size: 0.45, life: 0.55, reach: 1.4, fog: 14 },
+  rear: { rate: 70, speed: 30, size: 0.32, life: 0.45, reach: 1.4, fog: 10 },
   front: { rate: 60, speed: 18, size: 0.38, life: 0.4, reach: 1.0, fog: 8 },
-  down: { rate: 55, speed: 15, size: 0.42, life: 0.45, reach: 3.4, fog: 22 },
+  down: { rate: 55, speed: 15, size: 0.42, life: 0.45, reach: 4.2, fog: 42 },
   side: { rate: 40, speed: 10, size: 0.28, life: 0.3, reach: 0, fog: 0 },
 };
 const FX_SCALE = { low: 0.35, medium: 0.7, high: 1 };
@@ -256,6 +256,8 @@ export class Game {
         traffic: () => this.world.traffic.filter((t) => t.active && !t.knocked).map((t) => [...t.pos.toArray(), t.half.x, t.half.y, t.half.z, t.speed]),
         stunts: () => this.world.stunts.map((s) => [s.funnelZ0, s.z0, s.z1, s.x, s.landZ0, s.landZ1]),
         scene: this.scene,
+        camera: this.camera,
+        car: this.car.root,
       };
     }
     this.loop();
@@ -990,7 +992,8 @@ export class Game {
       this.pos.y = g;
       if (!this.onGround) this.land(impact);
       const slope = (this.world.groundHeight(this.pos.x, this.pos.z + 0.5) - this.world.groundHeight(this.pos.x, this.pos.z - 0.5)) / 1;
-      this.vel.y = slope * this.vel.z;
+      // the slope sample straddles ramp lips, where it is close to vertical; never fling the car down off one
+      this.vel.y = Math.max(-8, slope * this.vel.z);
       this.onGround = true;
     } else if (this.onGround) {
       // ran off a ramp lip or a ledge
@@ -1350,7 +1353,7 @@ export class Game {
           size: cfg.size,
           grow: 6,
           color: 0xf4f7fb,
-          alpha: 0.42 * Math.min(1, n.power + 0.2),
+          alpha: (n.group === 'rear' ? 0.3 : 0.42) * Math.min(1, n.power + 0.2),
           drag: 4.5,
           gravity: 0.5,
           fadeIn: 0.12,
@@ -1358,16 +1361,16 @@ export class Game {
       }
       if (burst && n.group === 'rear') {
         this.vapour.emit({
-          count: Math.ceil(22 * q),
+          count: Math.ceil(12 * q),
           pos: P,
-          spread: 0.25,
-          vel: this.tmp5.copy(carVel).multiplyScalar(0.8).addScaledVector(D, 12),
-          velSpread: 10,
-          life: 0.8,
-          size: 0.55,
-          grow: 7,
+          spread: 0.2,
+          vel: this.tmp5.copy(carVel).multiplyScalar(0.9).addScaledVector(D, 14),
+          velSpread: 9,
+          life: 0.5,
+          size: 0.35,
+          grow: 5,
           color: 0xffffff,
-          alpha: 0.5,
+          alpha: 0.32,
           drag: 3,
           gravity: 0.6,
           fadeIn: 0.05,
@@ -1379,12 +1382,12 @@ export class Game {
       const h = P.y - ground;
       if (h > cfg.reach || h < -0.5) return;
       const k = THREE.MathUtils.clamp(1 - h / cfg.reach, 0, 1) * Math.max(n.power, burst ? 1 : 0);
-      this.fogAcc[i] = (this.fogAcc[i] ?? 0) + cfg.fog * k * q * dt + (burst ? 10 * q : 0);
+      this.fogAcc[i] = (this.fogAcc[i] ?? 0) + cfg.fog * k * q * dt + (burst ? 5 * q : 0);
       let fogCount = Math.floor(this.fogAcc[i]);
       this.fogAcc[i] -= fogCount;
       const hit = this.tmp4.copy(P);
       if (n.group !== 'down') hit.addScaledVector(D, 1.4);
-      hit.y = ground + 0.25;
+      hit.y = ground + 0.1;
       while (fogCount-- > 0) {
         const a = Math.random() * Math.PI * 2;
         const out = 5 + 7 * k;
@@ -1393,15 +1396,15 @@ export class Game {
           count: 1,
           pos: hit,
           spread: 0.4,
-          vel: this.tmp5.set(Math.cos(a) * out + carVel.x * 0.5 + D.x * 4, isDust ? 1.4 : 0.5, Math.sin(a) * out + carVel.z * 0.5 + D.z * 4),
+          vel: this.tmp5.set(Math.cos(a) * out + carVel.x * 0.5 + D.x * 4, isDust ? 1.4 : 0.2, Math.sin(a) * out + carVel.z * 0.5 + D.z * 4),
           velSpread: 2,
           life: isDust ? 1.1 : 1.9,
-          size: isDust ? 0.9 : 1.4,
-          grow: isDust ? 2 : 3.4,
+          size: isDust ? 0.7 : 1.0,
+          grow: isDust ? 2 : 2.8,
           color: isDust ? dust : 0xeef1f5,
-          alpha: (isDust ? 0.22 : 0.3) * (0.4 + 0.6 * k),
+          alpha: (isDust ? 0.24 : 0.36) * (0.5 + 0.5 * k),
           drag: 1.4,
-          gravity: isDust ? -1.2 : 0.35,
+          gravity: isDust ? -1.2 : 0.1,
           fadeIn: 0.15,
         });
       }
