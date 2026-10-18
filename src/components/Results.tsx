@@ -30,18 +30,30 @@ export default function Results({ result, best, newBest, onRetry, onMenu }: Prop
   ];
   return (
     <div className="glass w-full max-w-lg animate-fadeup rounded-3xl p-6 text-center shadow-2xl sm:p-8">
-      <div className="label">{result.finished ? `Course clear · ${result.runTime.toFixed(1)}s` : `Time's up · ${result.distance} m`}</div>
+      <div className="label">
+        {result.attack
+          ? result.finished
+            ? `${result.mission} · ${result.runTime.toFixed(2)}s`
+            : `DNF · ${result.runTime.toFixed(2)}s`
+          : result.finished
+            ? `Course clear · ${result.runTime.toFixed(1)}s`
+            : `Time's up · ${result.distance} m`}
+      </div>
       <div className="mt-2 flex items-center justify-center gap-5">
         <div className={`bg-gradient-to-br bg-clip-text font-display text-7xl font-black text-transparent sm:text-8xl ${gradeColor[result.grade]}`}>{result.grade}</div>
         <div className="text-left">
-          <div className="label">Score</div>
-          <div className="font-display text-3xl font-black tabular-nums sm:text-4xl">{result.score.toLocaleString()}</div>
+          <div className="label">{result.attack ? 'Time' : 'Score'}</div>
+          <div className="font-display text-3xl font-black tabular-nums sm:text-4xl">
+            {result.attack ? `${result.runTime.toFixed(2)}s` : result.score.toLocaleString()}
+          </div>
           {newBest ? (
             <div className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-300/20 px-2 py-0.5 text-[10px] font-bold tracking-widest text-amber-200">
               <Trophy className="h-3 w-3" /> NEW BEST
             </div>
           ) : (
-            <div className="mt-1 text-xs text-white/45">Best {best.toLocaleString()}</div>
+            <div className="mt-1 text-xs text-white/45">
+              Best {result.attack ? (best > 0 ? `${best.toFixed(2)}s` : '—') : best.toLocaleString()}
+            </div>
           )}
         </div>
       </div>

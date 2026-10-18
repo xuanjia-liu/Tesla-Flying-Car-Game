@@ -10,8 +10,8 @@ export const STAGE_NAMES = ['MOJAVE DAWN', 'COASTAL CAUSEWAY', 'NEON DISTRICT'] 
 export interface GameStats {
   score: number;
   timeLeft: number;
-  energy: number; // 0..1
-  nitro: number; // 0..1
+  air: number; // 0..1 COPV pressure, refilled by the onboard compressor
+  thruster: ThrusterMode | null; // the cold-gas function firing right now
   speed: number; // m/s
   combo: number;
   comboTimer: number; // 0..1 until the combo drops
@@ -22,7 +22,11 @@ export interface GameStats {
   countdown: number; // >0 while the start countdown runs
   stage: number;
   boosting: boolean;
+  attack: boolean;
+  mission: string;
 }
+
+export type ThrusterMode = 'LAUNCH' | 'BOOST' | 'BRAKE' | 'GRIP' | 'HOVER' | 'LANDING';
 
 export interface RunBreakdown {
   crashes: number;
@@ -47,6 +51,8 @@ export interface GameOverResult {
   runTime: number;
   grade: Grade;
   breakdown: RunBreakdown;
+  attack: boolean;
+  mission: string;
 }
 
 export type Tone = 'good' | 'bad' | 'gold';
@@ -60,7 +66,7 @@ export interface GameEvents {
   onHint: (hint: HintId | null) => void;
 }
 
-export type HintId = 'drive' | 'fly' | 'nitro' | 'roll' | 'ramp' | 'barrier' | 'gantry' | 'stunt' | 'kickflip';
+export type HintId = 'drive' | 'fly' | 'boost' | 'grip' | 'roll' | 'ramp' | 'barrier' | 'gantry' | 'stunt' | 'kickflip';
 
 export const PAINTS = [
   { id: 'silver', name: 'Quicksilver', hex: 0xd9dce2 },
@@ -75,5 +81,14 @@ export function gradeFor(score: number, finished: boolean): Grade {
   if (score >= 25000) return 'A';
   if (score >= 14000) return 'B';
   if (score >= 6000) return 'C';
+  return 'D';
+}
+
+export function gradeForTime(time: number, par: number, finished: boolean): Grade {
+  if (!finished) return 'D';
+  if (time <= par) return 'S';
+  if (time <= par * 1.15) return 'A';
+  if (time <= par * 1.35) return 'B';
+  if (time <= par * 1.6) return 'C';
   return 'D';
 }

@@ -5,6 +5,7 @@ export interface InputState {
   thrustPressed: boolean; // edge
   boost: boolean;
   roll: -1 | 0 | 1; // edge: barrel roll direction
+  restart: boolean; // edge
 }
 
 export interface TouchState {
@@ -24,6 +25,7 @@ export class InputManager {
   private keys = new Set<string>();
   private rollQueue: -1 | 0 | 1 = 0;
   private thrustWasDown = false;
+  private restartWas = false;
   private padRollWas = false;
   touch: TouchState = { steer: 0, thrust: false, boost: false, brake: false };
   touchActive = false;
@@ -111,6 +113,9 @@ export class InputManager {
 
     const thrustPressed = thrust && !this.thrustWasDown;
     this.thrustWasDown = thrust;
+    const restartDown = this.has('KeyR');
+    const restart = restartDown && !this.restartWas;
+    this.restartWas = restartDown;
     return {
       throttle: Math.max(-1, Math.min(1, throttle)),
       steer: Math.max(-1, Math.min(1, steer)),
@@ -118,6 +123,7 @@ export class InputManager {
       thrustPressed,
       boost,
       roll,
+      restart,
     };
   }
 }

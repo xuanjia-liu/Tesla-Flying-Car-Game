@@ -10,12 +10,13 @@ import { InputManager } from './game/input';
 import { isCoarsePointer, loadSettings, saveSettings, Settings } from './game/settings';
 import { sfx, startMusic, unlockAudio } from './game/audio';
 import { GameEvents, GameOverResult, GameState, GameStats, HintId, PAINTS } from './game/types';
+import { MISSIONS } from './game/missions';
 
 const EMPTY_STATS: GameStats = {
   score: 0,
   timeLeft: 35,
-  energy: 1,
-  nitro: 0.4,
+  air: 1,
+  thruster: null,
   speed: 0,
   combo: 1,
   comboTimer: 0,
@@ -26,13 +27,16 @@ const EMPTY_STATS: GameStats = {
   countdown: 3,
   stage: 0,
   boosting: false,
+  attack: false,
+  mission: '',
 };
 
 const HINTS: Record<HintId, [string, string]> = {
   drive: ['W to accelerate · A / D to steer', 'Auto-throttle on · drag the left side to steer'],
-  fly: ['Tap SPACE to hop — hold it to fly', 'Tap THRUST to hop — hold it to fly'],
+  fly: ['Tap SPACE to hop on the down thrusters — hold for a short hover', 'Tap HOP to hop on the down thrusters — hold for a short hover'],
   ramp: ['Ramp ahead — hit it fast and thread the rings', 'Ramp ahead — hit it fast and thread the rings'],
-  nitro: ['SHIFT fires nitro — rings and tricks refill it', 'Hold NITRO to boost — rings and tricks refill it'],
+  boost: ['SHIFT drops the plate and fires the rear mains — S fires the front ones to brake', 'Hold BOOST to fire the rear mains — BRAKE fires the front ones'],
+  grip: ['Hard corners at speed fire the side pods upward for extra grip', 'Hard corners at speed fire the side pods upward for extra grip'],
   roll: ['Press Q or E in the air for a barrel roll', 'Tap ROLL in the air for a barrel roll'],
   barrier: ['Barriers ahead — fly over or steer around', 'Barriers ahead — fly over or steer around'],
   gantry: ['Gantries overhead — fly under or above them', 'Gantries overhead — fly under or above them'],
@@ -62,6 +66,16 @@ function App() {
   const [best, setBest] = useState(() => Number(localStorage.getItem(BEST_KEY) ?? 0));
   const [newBest, setNewBest] = useState(false);
   const [touch, setTouch] = useState(isCoarsePointer);
+  const [missionId, setMissionId] = useState(0);
+  const missionRef = useRef(0);
+  const [bestTimes, setBestTimes] = useState<Record<number, number>>(() => {
+    const out: Record<number, number> = {};
+    for (const m of MISSIONS) {
+      const t = Number(localStorage.getItem(`roadster-best-time-${m.id}`) || 0);
+      if (t > 0) out[m.id] = t;
+    }
+    return out;
+  });
 
   stateRef.current = state;
 
@@ -80,6 +94,21 @@ function App() {
         setState('gameover');
         setPaused(false);
         setHint(null);
+        if (r.attack) {
+          if (!r.finished) {
+            setNewBest(false);
+            return;
+          }
+          setBestTimes((prev) => {
+            const id = missionRef.current;
+            const cur = prev[id] ?? 0;
+            const isBest = cur <= 0 || r.runTime < cur;
+            setNewBest(isBest);
+            if (isBest) localStorage.setItem(`roadster-best-time-${id}`, String(r.runTime));
+            return isBest ? { ...prev, [id]: r.runTime } : prev;
+          });
+          return;
+        }
         setBest((b) => {
           const isBest = r.score > b;
           setNewBest(isBest);
@@ -134,9 +163,12 @@ function App() {
     gameRef.current?.applySettings(settings);
   }, [settings]);
 
-  const start = useCallback(() => {
+  const start = useCallback((mission?: number) => {
     unlockAudio();
     sfx.click();
+    const id = typeof mission === 'number' ? mission : missionRef.current;
+    missionRef.current = id;
+    setMissionId(id);
     setResult(null);
     setPopups([]);
     setCallouts([]);
@@ -145,7 +177,7 @@ function App() {
     setPaused(false);
     setStats(EMPTY_STATS);
     if (inputRef.current) inputRef.current.touchActive = touch;
-    gameRef.current?.startRun();
+    gameRef.current?.startRun(id);
     setState('playing');
   }, [touch]);
 
@@ -159,7 +191,11 @@ function App() {
   // keyboard shortcut to start from the menu / results
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((state === 'menu' || state === 'gameover') && !panel && e.code === 'Enter') start();
+      if (panel || (state !== 'menu' && state !== 'gameover')) return;
+      if (e.code === 'Digit1') start(0);
+      else if (e.code === 'Digit2') start(1);
+      else if (e.code === 'Digit3') start(2);
+      else if (e.code === 'Enter') start();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -221,7 +257,7 @@ function App() {
               <button onClick={() => setPaused(false)} className="btn-primary w-56" autoFocus>
                 <Play className="h-4 w-4" /> RESUME
               </button>
-              <button onClick={start} className="btn-ghost w-56">
+              <button onClick={() => start()} className="btn-ghost w-56">
                 <RotateCcw className="h-3.5 w-3.5" /> RESTART
               </button>
               <div className="flex w-56 gap-2">
@@ -250,7 +286,7 @@ function App() {
               <span className="block bg-gradient-to-r from-cyan-200 via-cyan-300 to-fuchsia-400 bg-clip-text text-transparent">THRUSTER TRIAL</span>
             </h1>
             <p className="mt-3 max-w-sm text-sm leading-relaxed text-white/65 sm:text-base">
-              Drive it, then fly it. Three stages from desert dawn to a neon city. Thread rings, chain tricks and stick the landings before the clock runs out.
+              Three missions. Prove every cold-gas thruster on the desert road, then time-attack two elevated circuits — banked turns, wallrides, loops and jumps.
             </p>
           </div>
 
@@ -274,9 +310,30 @@ function App() {
               </div>
               <div className="mt-1.5 text-xs text-white/45">{PAINTS.find((p) => p.id === settings.paint)?.name}</div>
             </div>
+            <div className="grid gap-2">
+              {MISSIONS.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => start(m.id)}
+                  className={`rounded-2xl border px-3 py-2 text-left transition hover:border-cyan-200/70 hover:bg-white/10 ${
+                    missionId === m.id ? 'border-cyan-200/80 bg-white/10' : 'border-white/15 bg-black/25'
+                  }`}
+                >
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="font-display text-sm font-black tracking-wide">{m.name}</span>
+                    <span className="text-[10px] font-semibold tracking-[0.18em] text-cyan-200/80">
+                      {m.attack ? (bestTimes[m.id] ? `${bestTimes[m.id].toFixed(2)}s` : 'TIME') : best > 0 && m.id === 0 ? best.toLocaleString() : 'RUN'}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] leading-snug text-white/55">
+                    {m.place} — {m.blurb}
+                  </div>
+                </button>
+              ))}
+            </div>
             <div className="flex flex-wrap items-center gap-3">
-              <button onClick={start} className="btn-primary px-10">
-                <Play className="h-4 w-4 fill-current" /> START RUN
+              <button onClick={() => start(missionId)} className="btn-primary px-8">
+                <Play className="h-4 w-4 fill-current" /> START
               </button>
               <button onClick={() => setPanel(panel === 'help' ? null : 'help')} className="icon-btn h-11 w-11" aria-label="How to play">
                 <CircleHelp className="h-5 w-5" />
@@ -291,7 +348,7 @@ function App() {
                   Best <span className="font-display font-bold text-cyan-200">{best.toLocaleString()}</span>
                 </span>
               )}
-              {!touch && <span>Press ENTER to start</span>}
+              {!touch && <span>1 / 2 / 3 or ENTER</span>}
             </div>
           </div>
           {panel && (
@@ -311,7 +368,13 @@ function App() {
       {/* results */}
       {state === 'gameover' && result && (
         <div className="absolute inset-0 z-40 flex items-center justify-center overflow-y-auto bg-ink/60 p-4 backdrop-blur-sm">
-          <Results result={result} best={best} newBest={newBest} onRetry={start} onMenu={toMenu} />
+          <Results
+            result={result}
+            best={result.attack ? (bestTimes[missionId] ?? 0) : best}
+            newBest={newBest}
+            onRetry={() => start(missionId)}
+            onMenu={toMenu}
+          />
         </div>
       )}
     </div>

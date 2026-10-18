@@ -1,5 +1,5 @@
-import { Gauge, Rocket, Zap } from 'lucide-react';
-import { GameStats, STAGE_NAMES, Tone } from '@/game/types';
+import { Gauge, Wind } from 'lucide-react';
+import { GameStats, STAGE_NAMES, ThrusterMode, Tone } from '@/game/types';
 
 export interface Popup {
   id: number;
@@ -37,6 +37,15 @@ function Bar({ value, color, icon, label, warn }: { value: number; color: string
   );
 }
 
+const modeStyle: Record<ThrusterMode, string> = {
+  LAUNCH: 'border-fuchsia-300/60 bg-fuchsia-500/20 text-fuchsia-100',
+  BOOST: 'border-fuchsia-300/50 bg-fuchsia-500/15 text-fuchsia-100',
+  BRAKE: 'border-rose-300/50 bg-rose-500/15 text-rose-100',
+  GRIP: 'border-amber-200/50 bg-amber-300/15 text-amber-100',
+  HOVER: 'border-cyan-200/50 bg-cyan-400/15 text-cyan-50',
+  LANDING: 'border-cyan-200/50 bg-cyan-400/15 text-cyan-50',
+};
+
 function Progress({ progress }: { progress: number }) {
   return (
     <div className="relative mx-auto mt-2 h-1 w-48 rounded-full bg-white/15 sm:w-72">
@@ -63,7 +72,7 @@ interface HudProps {
 
 export default function Hud({ stats, popups, callouts, hint, touch }: HudProps) {
   const secs = Math.max(0, stats.timeLeft);
-  const urgent = secs < 10 && stats.countdown <= 0;
+  const urgent = !stats.attack && secs < 10 && stats.countdown <= 0;
   const mph = Math.round(stats.speed * 2.237);
   const counting = stats.countdown > 0;
   const cd = Math.ceil(stats.countdown);
@@ -93,8 +102,11 @@ export default function Hud({ stats, popups, callouts, hint, touch }: HudProps) 
           {Math.floor(secs)}
           <span className="text-lg sm:text-2xl">.{Math.floor((secs % 1) * 10)}</span>
         </div>
-        <div className="mt-1 text-[9px] font-semibold tracking-[0.35em] text-white/55 sm:text-[10px]">{STAGE_NAMES[stats.stage]}</div>
+        <div className="mt-1 text-[9px] font-semibold tracking-[0.35em] text-white/55 sm:text-[10px]">{stats.mission || STAGE_NAMES[stats.stage]}</div>
         <Progress progress={stats.progress} />
+        {stats.attack && stats.countdown <= 0 && (
+          <div className="mt-1 text-[9px] font-semibold tracking-[0.28em] text-white/45">R RESTART</div>
+        )}
       </div>
 
       {/* popups */}
@@ -151,8 +163,20 @@ export default function Hud({ stats, popups, callouts, hint, touch }: HudProps) 
           )}
         </div>
         <div className="mt-2 space-y-1.5">
-          <Bar value={stats.energy} color="bg-gradient-to-r from-sky-400 to-cyan-200" icon={<Rocket className="h-3.5 w-3.5" />} label="THRUST" warn={stats.energy < 0.15} />
-          <Bar value={stats.nitro} color="bg-gradient-to-r from-fuchsia-500 to-pink-300" icon={<Zap className="h-3.5 w-3.5" />} label="NITRO" />
+          <Bar
+            value={stats.air}
+            color={stats.air < 0.2 ? 'bg-gradient-to-r from-rose-400 to-rose-200' : 'bg-gradient-to-r from-slate-300 via-sky-200 to-white'}
+            icon={<Wind className="h-3.5 w-3.5" />}
+            label="AIR · COPV"
+            warn={stats.air < 0.15}
+          />
+          <div className={`flex h-5 ${touch ? 'justify-start' : 'justify-center'}`}>
+            {stats.thruster && (
+              <span key={stats.thruster} className={`animate-pop rounded border px-2 py-0.5 text-[9px] font-bold tracking-[0.3em] ${modeStyle[stats.thruster]}`}>
+                {stats.thruster}
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </div>
